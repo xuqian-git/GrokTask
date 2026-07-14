@@ -23,6 +23,8 @@ export default tseslint.config(
     rules: {
       "vue/multi-word-component-names": "off",
       "vue/max-attributes-per-line": "off",
+      // Markdown/reply HTML is produced by our sanitizing renderer only.
+      "vue/no-v-html": "off",
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },

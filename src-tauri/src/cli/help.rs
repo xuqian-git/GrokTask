@@ -29,12 +29,14 @@ Usage:
 
   {prog} run --mode read|write --cwd PATH [--model ID] [--effort VALUE] TASK...
   {prog} start --mode read|write --cwd PATH [--model ID] [--effort VALUE] [--submission-id UUID] TASK...
+  {prog} submit --mode read|write --cwd PATH TASK...   (alias of run)
   {prog} status TASK_ID [--json]
   {prog} wait TASK_ID TURN_ID [--timeout SECONDS] [--json]
   {prog} cancel TASK_ID (--turn TURN_ID | --recovery RECOVERY_ID) [--json]
 
   {prog} tasks list [--limit N] [--json]
   {prog} tasks show TASK_ID [--json]
+  {prog} list | show TASK_ID                           (aliases)
   {prog} tasks clear [--inactive-only]
 
   {prog} agents status [codex|claude]

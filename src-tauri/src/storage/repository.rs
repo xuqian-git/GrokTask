@@ -147,6 +147,197 @@ pub fn update_task_status(
     Ok(())
 }
 
+/// List tasks newest-first.
+pub fn list_tasks(conn: &Connection, limit: i64) -> Result<Vec<TaskRow>, RepoError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, cwd, mode, status, session_state, recovery_state,
+                active_recovery_id, last_turn_id, acp_session_id, daemon_instance_id,
+                supervisor_pid, supervisor_started_at, retention_protect_until,
+                last_sequence, timeline_generation, state_revision,
+                created_at, updated_at, finished_at
+         FROM tasks ORDER BY created_at DESC LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![limit], |r| {
+            Ok(TaskRow {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                cwd: r.get(2)?,
+                mode: r.get(3)?,
+                status: r.get(4)?,
+                session_state: r.get(5)?,
+                recovery_state: r.get(6)?,
+                active_recovery_id: r.get(7)?,
+                last_turn_id: r.get(8)?,
+                acp_session_id: r.get(9)?,
+                daemon_instance_id: r.get(10)?,
+                supervisor_pid: r.get(11)?,
+                supervisor_started_at: r.get(12)?,
+                retention_protect_until: r.get(13)?,
+                last_sequence: r.get(14)?,
+                timeline_generation: r.get(15)?,
+                state_revision: r.get(16)?,
+                created_at: r.get(17)?,
+                updated_at: r.get(18)?,
+                finished_at: r.get(19)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Patch common task mirror fields after a turn progresses.
+#[allow(clippy::too_many_arguments)]
+pub fn update_task_progress(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    last_turn_id: Option<&str>,
+    actual_model: Option<&str>,
+    stop_reason: Option<&str>,
+    error_code: Option<&str>,
+    error_message: Option<&str>,
+    finished_at: Option<i64>,
+    updated_at: i64,
+) -> Result<(), RepoError> {
+    let n = conn.execute(
+        "UPDATE tasks SET
+            status = ?1,
+            last_turn_id = COALESCE(?2, last_turn_id),
+            actual_model = COALESCE(?3, actual_model),
+            stop_reason = COALESCE(?4, stop_reason),
+            error_code = COALESCE(?5, error_code),
+            error_message = COALESCE(?6, error_message),
+            finished_at = COALESCE(?7, finished_at),
+            updated_at = ?8
+         WHERE id = ?9",
+        params![
+            status,
+            last_turn_id,
+            actual_model,
+            stop_reason,
+            error_code,
+            error_message,
+            finished_at,
+            updated_at,
+            id
+        ],
+    )?;
+    if n == 0 {
+        return Err(RepoError::NotFound(id.into()));
+    }
+    Ok(())
+}
+
+type TaskModelFields = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+pub fn get_task_models(conn: &Connection, id: &str) -> Result<TaskModelFields, RepoError> {
+    let row = conn
+        .query_row(
+            "SELECT requested_model, actual_model, stop_reason, error_code FROM tasks WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .optional()?;
+    Ok(row.unwrap_or((None, None, None, None)))
+}
+
+pub fn list_turns_for_task(conn: &Connection, task_id: &str) -> Result<Vec<TurnRow>, RepoError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, task_id, ordinal, prompt_markdown, status, owner_kind,
+                owner_connection_id, owner_request_id, mode, termination_cause,
+                answer_markdown, partial, result_json, created_at, started_at, finished_at
+         FROM turns WHERE task_id = ?1 ORDER BY ordinal ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![task_id], |r| {
+            Ok(TurnRow {
+                id: r.get(0)?,
+                task_id: r.get(1)?,
+                ordinal: r.get(2)?,
+                prompt_markdown: r.get(3)?,
+                status: r.get(4)?,
+                owner_kind: r.get(5)?,
+                owner_connection_id: r.get(6)?,
+                owner_request_id: r.get(7)?,
+                mode: r.get(8)?,
+                termination_cause: r.get(9)?,
+                answer_markdown: r.get(10)?,
+                partial: r.get::<_, i64>(11)? != 0,
+                result_json: r.get(12)?,
+                created_at: r.get(13)?,
+                started_at: r.get(14)?,
+                finished_at: r.get(15)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn update_turn_status(
+    conn: &Connection,
+    turn_id: &str,
+    status: &str,
+    started_at: Option<i64>,
+) -> Result<(), RepoError> {
+    let n = conn.execute(
+        "UPDATE turns SET status = ?1, started_at = COALESCE(?2, started_at) WHERE id = ?3",
+        params![status, started_at, turn_id],
+    )?;
+    if n == 0 {
+        return Err(RepoError::NotFound(turn_id.into()));
+    }
+    Ok(())
+}
+
+pub fn set_turn_termination_cause(
+    conn: &Connection,
+    turn_id: &str,
+    cause: &str,
+) -> Result<(), RepoError> {
+    conn.execute(
+        "UPDATE turns SET termination_cause = ?1 WHERE id = ?2 AND termination_cause IS NULL",
+        params![cause, turn_id],
+    )?;
+    Ok(())
+}
+
+/// Insert a redacted raw ACP event for diagnostics.
+pub fn insert_raw_event(
+    conn: &Connection,
+    task_id: &str,
+    raw_sequence: i64,
+    direction: &str,
+    method: Option<&str>,
+    payload_json: &str,
+) -> Result<(), RepoError> {
+    conn.execute(
+        "INSERT INTO raw_acp_events (task_id, raw_sequence, direction, method, payload_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            task_id,
+            raw_sequence,
+            direction,
+            method,
+            payload_json,
+            now_ms()
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn set_retention_protect_until(
     conn: &Connection,
     id: &str,
@@ -785,6 +976,69 @@ mod tests {
         let got = get_turn(&conn, "turn1").unwrap().unwrap();
         assert_eq!(got.status, "completed");
         assert_eq!(got.answer_markdown, "ok");
+    }
+
+    #[test]
+    fn list_turns_for_task_maps_columns_correctly() {
+        let conn = open_memory().unwrap();
+        insert_task(&conn, &sample_task("task-list")).unwrap();
+        let created = 1_700_000_000_100_i64;
+        let started = 1_700_000_000_200_i64;
+        let finished = 1_700_000_000_300_i64;
+        let turn = TurnRow {
+            id: "turn-map".into(),
+            task_id: "task-list".into(),
+            ordinal: 1,
+            prompt_markdown: "prompt body".into(),
+            status: "running".into(),
+            owner_kind: "daemon".into(),
+            owner_connection_id: Some("conn-1".into()),
+            owner_request_id: Some("req-9".into()),
+            mode: "write".into(),
+            termination_cause: None,
+            answer_markdown: String::new(),
+            partial: false,
+            result_json: None,
+            created_at: created,
+            started_at: Some(started),
+            finished_at: None,
+        };
+        insert_turn(&conn, &turn).unwrap();
+        let result = serde_json::json!({"status": "completed", "tokens": 42});
+        finalize_turn(
+            &conn,
+            "turn-map",
+            "completed",
+            "## final answer",
+            Some("natural"),
+            true,
+            &result,
+            finished,
+        )
+        .unwrap();
+
+        let listed = list_turns_for_task(&conn, "task-list").unwrap();
+        assert_eq!(listed.len(), 1);
+        let got = &listed[0];
+        assert_eq!(got.id, "turn-map");
+        assert_eq!(got.task_id, "task-list");
+        assert_eq!(got.ordinal, 1);
+        assert_eq!(got.prompt_markdown, "prompt body");
+        assert_eq!(got.status, "completed");
+        assert_eq!(got.owner_kind, "daemon");
+        assert_eq!(got.owner_connection_id.as_deref(), Some("conn-1"));
+        assert_eq!(got.owner_request_id.as_deref(), Some("req-9"));
+        assert_eq!(got.mode, "write");
+        assert_eq!(got.termination_cause.as_deref(), Some("natural"));
+        assert_eq!(got.answer_markdown, "## final answer");
+        assert!(got.partial);
+        assert_eq!(
+            got.result_json.as_deref(),
+            Some(r#"{"status":"completed","tokens":42}"#)
+        );
+        assert_eq!(got.created_at, created);
+        assert_eq!(got.started_at, Some(started));
+        assert_eq!(got.finished_at, Some(finished));
     }
 
     #[test]

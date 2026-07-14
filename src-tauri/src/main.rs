@@ -16,6 +16,7 @@ mod app;
 mod cli;
 mod config;
 mod daemon;
+mod dto;
 mod fingerprint;
 mod ipc;
 mod mcp;

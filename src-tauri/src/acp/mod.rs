@@ -1,6 +1,10 @@
-//! ACP client / reducer (Phase 2). Process spawn helpers live under supervisor.
+//! ACP client, normalization, redaction, and conversation reducer.
 
+pub mod normalize;
 pub mod process;
+pub mod redact;
+pub mod reducer;
+pub mod types;
 
-/// Placeholder so Phase 0–1 compiles with a stable module boundary.
+/// ACP protocol major version we speak.
 pub const ACP_PROTOCOL_MAJOR: u32 = 1;

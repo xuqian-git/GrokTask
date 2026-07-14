@@ -40,7 +40,7 @@ onMounted(() => {
   <div class="app-shell" :data-surface="surface">
     <header class="app-header">
       <h1>{{ title }}</h1>
-      <span class="badge">Phase 0–1</span>
+      <span class="badge">Phase 2–3</span>
     </header>
     <main class="app-main">
       <PopoverView v-if="surface === 'popover'" />

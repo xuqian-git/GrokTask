@@ -1246,6 +1246,7 @@ dependencies = [
  "libc",
  "notify",
  "parking_lot",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

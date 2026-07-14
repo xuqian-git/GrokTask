@@ -2,8 +2,13 @@
 
 pub mod lifecycle;
 pub mod spawn;
+pub mod task_manager;
 
 use crate::config::ConfigHandle;
+use crate::dto::{
+    validate_submission_id, validate_task_input, validate_uuid_like, DEFAULT_WAIT_TIMEOUT_MS,
+    MAX_WAIT_TIMEOUT_MS,
+};
 use crate::fingerprint::BinaryFingerprint;
 use crate::ipc::codec::{read_msg, write_msg};
 use crate::ipc::protocol::{ClientRole, Hello, HelloAck, HelloStatus, Request, Response};
@@ -18,6 +23,7 @@ use lifecycle::{
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use task_manager::{TaskError, TaskManager};
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::watch;
 
@@ -61,6 +67,7 @@ async fn run_async() -> Result<()> {
 
     let barrier = Arc::new(ReplacementBarrier::new());
     let guards = Arc::new(DeletionGuards::new());
+    let tasks = Arc::new(TaskManager::new(db_path.clone()));
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let state = Arc::new(DaemonState {
         meta: Mutex::new(meta.clone()),
@@ -68,6 +75,7 @@ async fn run_async() -> Result<()> {
         barrier: barrier.clone(),
         guards,
         db_path,
+        tasks,
     });
 
     // Accept loop
@@ -115,6 +123,7 @@ struct DaemonState {
     barrier: Arc<ReplacementBarrier>,
     guards: Arc<DeletionGuards>,
     db_path: std::path::PathBuf,
+    tasks: Arc<TaskManager>,
 }
 
 async fn handle_connection(
@@ -231,13 +240,13 @@ where
         if req.r#type != "request" {
             continue;
         }
-        let response = dispatch_request(&req, &state, hello.role);
+        let response = dispatch_request(&req, &state, hello.role).await;
         write_msg(writer, &response).await?;
     }
     Ok(())
 }
 
-fn dispatch_request(req: &Request, state: &DaemonState, _role: ClientRole) -> Response {
+async fn dispatch_request(req: &Request, state: &DaemonState, role: ClientRole) -> Response {
     match req.method.as_str() {
         "health.get" => {
             let meta = state.meta.lock().clone();
@@ -261,13 +270,261 @@ fn dispatch_request(req: &Request, state: &DaemonState, _role: ClientRole) -> Re
                 Err(e) => Response::err(&req.request_id, "internal", e.to_string(), false),
             }
         }
+        "task.start" => handle_task_start(req, state, role, false).await,
+        "task.run" => handle_task_start(req, state, role, true).await,
+        "task.status" => {
+            let task_id = match req.params.get("taskId").and_then(|v| v.as_str()) {
+                Some(id) => match validate_uuid_like(id, "taskId") {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return Response::err(&req.request_id, &e.code, e.message, false);
+                    }
+                },
+                None => {
+                    return Response::err(
+                        &req.request_id,
+                        "invalid_params",
+                        "taskId is required",
+                        false,
+                    );
+                }
+            };
+            match state.tasks.status(&task_id) {
+                Ok(s) => Response::ok(&req.request_id, serde_json::to_value(s).unwrap_or_default()),
+                Err(e) => task_err_response(&req.request_id, e),
+            }
+        }
+        "task.wait" => {
+            let task_id = match req.params.get("taskId").and_then(|v| v.as_str()) {
+                Some(id) => match validate_uuid_like(id, "taskId") {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return Response::err(&req.request_id, &e.code, e.message, false);
+                    }
+                },
+                None => {
+                    return Response::err(
+                        &req.request_id,
+                        "invalid_params",
+                        "taskId is required",
+                        false,
+                    );
+                }
+            };
+            let turn_id = match req.params.get("turnId").and_then(|v| v.as_str()) {
+                Some(id) => match validate_uuid_like(id, "turnId") {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return Response::err(&req.request_id, &e.code, e.message, false);
+                    }
+                },
+                None => {
+                    return Response::err(
+                        &req.request_id,
+                        "invalid_params",
+                        "turnId is required",
+                        false,
+                    );
+                }
+            };
+            let timeout_ms = req
+                .params
+                .get("timeoutMs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
+                .min(MAX_WAIT_TIMEOUT_MS);
+            match state.tasks.wait(&task_id, &turn_id, timeout_ms).await {
+                Ok(r) => Response::ok(&req.request_id, serde_json::to_value(r).unwrap_or_default()),
+                Err(TaskError::WaitTimeout(w)) => {
+                    Response::ok(&req.request_id, serde_json::to_value(w).unwrap_or_default())
+                }
+                Err(e) => task_err_response(&req.request_id, e),
+            }
+        }
+        "task.cancel" => {
+            let task_id = match req.params.get("taskId").and_then(|v| v.as_str()) {
+                Some(id) => match validate_uuid_like(id, "taskId") {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return Response::err(&req.request_id, &e.code, e.message, false);
+                    }
+                },
+                None => {
+                    return Response::err(
+                        &req.request_id,
+                        "invalid_params",
+                        "taskId is required",
+                        false,
+                    );
+                }
+            };
+            if let Some(turn_id) = req.params.get("turnId").and_then(|v| v.as_str()) {
+                let turn_id = match validate_uuid_like(turn_id, "turnId") {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return Response::err(&req.request_id, &e.code, e.message, false);
+                    }
+                };
+                let cause = match role {
+                    ClientRole::Mcp => "mcp_cancel",
+                    _ => "user_cancel",
+                };
+                // cancel may block briefly — run blocking in spawn_blocking
+                let tasks = state.tasks.clone();
+                let res = tokio::task::spawn_blocking(move || {
+                    tasks.cancel_turn(&task_id, &turn_id, cause)
+                })
+                .await;
+                match res {
+                    Ok(Ok(r)) => {
+                        Response::ok(&req.request_id, serde_json::to_value(r).unwrap_or_default())
+                    }
+                    Ok(Err(e)) => task_err_response(&req.request_id, e),
+                    Err(e) => Response::err(&req.request_id, "internal", e.to_string(), false),
+                }
+            } else if let Some(recovery_id) = req.params.get("recoveryId").and_then(|v| v.as_str())
+            {
+                let _ = recovery_id;
+                Response::err(
+                    &req.request_id,
+                    "not_found",
+                    "recovery cancel not available (no active recovery)",
+                    false,
+                )
+            } else {
+                Response::err(
+                    &req.request_id,
+                    "invalid_params",
+                    "turnId or recoveryId is required",
+                    false,
+                )
+            }
+        }
+        "tasks.list" => {
+            let limit = req
+                .params
+                .get("limit")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(50);
+            match state.tasks.list(limit) {
+                Ok(list) => Response::ok(
+                    &req.request_id,
+                    serde_json::to_value(list).unwrap_or_default(),
+                ),
+                Err(e) => task_err_response(&req.request_id, e),
+            }
+        }
+        "tasks.show" | "task.detail" => {
+            let task_id = match req.params.get("taskId").and_then(|v| v.as_str()) {
+                Some(id) => match validate_uuid_like(id, "taskId") {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return Response::err(&req.request_id, &e.code, e.message, false);
+                    }
+                },
+                None => {
+                    return Response::err(
+                        &req.request_id,
+                        "invalid_params",
+                        "taskId is required",
+                        false,
+                    );
+                }
+            };
+            match state.tasks.detail(&task_id) {
+                Ok(d) => Response::ok(&req.request_id, serde_json::to_value(d).unwrap_or_default()),
+                Err(e) => task_err_response(&req.request_id, e),
+            }
+        }
         other => Response::err(
             &req.request_id,
             "method_not_found",
-            format!("unknown method `{other}` (Phase 0–1 foundation)"),
+            format!("unknown method `{other}`"),
             false,
         ),
     }
+}
+
+async fn handle_task_start(
+    req: &Request,
+    state: &DaemonState,
+    role: ClientRole,
+    blocking_run: bool,
+) -> Response {
+    let task = match req.params.get("task").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => {
+            return Response::err(&req.request_id, "invalid_params", "task is required", false);
+        }
+    };
+    let cwd = match req.params.get("cwd").and_then(|v| v.as_str()) {
+        Some(c) => c,
+        None => {
+            return Response::err(&req.request_id, "invalid_params", "cwd is required", false);
+        }
+    };
+    let mode = match req.params.get("mode").and_then(|v| v.as_str()) {
+        Some(m) => m,
+        None => {
+            return Response::err(
+                &req.request_id,
+                "invalid_params",
+                "mode must be explicit `read` or `write`",
+                false,
+            );
+        }
+    };
+    let model = req.params.get("model").and_then(|v| v.as_str());
+    let effort = req.params.get("effort").and_then(|v| v.as_str());
+    let title = req.params.get("title").and_then(|v| v.as_str());
+    let input = match validate_task_input(task, cwd, mode, model, effort, title) {
+        Ok(i) => i,
+        Err(e) => return Response::err(&req.request_id, &e.code, e.message, false),
+    };
+
+    let owner_kind = if blocking_run { "client" } else { "daemon" };
+    let connection_id = Some(format!("{role:?}"));
+
+    if blocking_run {
+        let tasks = state.tasks.clone();
+        let req_id = req.request_id.clone();
+        match tasks
+            .run_blocking(input, connection_id, Some(req_id.clone()))
+            .await
+        {
+            Ok(r) => Response::ok(&req.request_id, serde_json::to_value(r).unwrap_or_default()),
+            Err(e) => task_err_response(&req.request_id, e),
+        }
+    } else {
+        let submission_id = match req.params.get("submissionId").and_then(|v| v.as_str()) {
+            Some(s) => match validate_submission_id(s) {
+                Ok(s) => s,
+                Err(e) => return Response::err(&req.request_id, &e.code, e.message, false),
+            },
+            None => repository_new_id(),
+        };
+        match state.tasks.start(
+            input,
+            submission_id,
+            owner_kind,
+            connection_id,
+            Some(req.request_id.clone()),
+        ) {
+            Ok(r) => Response::ok(&req.request_id, serde_json::to_value(r).unwrap_or_default()),
+            Err(e) => task_err_response(&req.request_id, e),
+        }
+    }
+}
+
+fn repository_new_id() -> String {
+    crate::storage::repository::new_id()
+}
+
+fn task_err_response(request_id: &str, e: TaskError) -> Response {
+    if let TaskError::WaitTimeout(w) = e {
+        return Response::ok(request_id, serde_json::to_value(w).unwrap_or_default());
+    }
+    Response::err(request_id, e.code(), e.message(), e.retryable())
 }
 
 pub fn start_detached() -> Result<()> {
@@ -452,14 +709,16 @@ mod tests {
             let endpoint = transport::daemon_endpoint_display();
             let meta = DaemonMeta::new(&endpoint, BinaryFingerprint::ZERO);
             write_meta(&meta).unwrap();
+            let db_path = tmp.path().join("history.sqlite3");
+            let _ = storage::open_path(&db_path).unwrap();
             let state = Arc::new(DaemonState {
                 meta: Mutex::new(meta.clone()),
                 config: ConfigHandle::new(crate::config::ConfigDocument::default()),
                 barrier: Arc::new(ReplacementBarrier::new()),
                 guards: Arc::new(DeletionGuards::new()),
-                db_path: tmp.path().join("history.sqlite3"),
+                db_path: db_path.clone(),
+                tasks: Arc::new(TaskManager::new(db_path)),
             });
-            let _ = storage::open_path(&state.db_path).unwrap();
 
             let server = tokio::spawn({
                 let state = state.clone();
