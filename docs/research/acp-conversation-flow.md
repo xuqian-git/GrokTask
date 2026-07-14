@@ -17,6 +17,7 @@
 | --- | --- | --- | --- |
 | Zed | `afc13dc8e054705a42e2931b0840ed03ccfa583a` | 有序语义时间线、Thought 与 Reply 交错、Tail 滚动状态机、load 竞态处理、活动 Plan 条 | GPL 代码不复制；工具完成后主动折叠不采用 |
 | Harnss | `dc1dfd8a33caa46a1eefcfe9e14697b27ac4c33d` | 阶段级思考、语义工具卡、手动展开保护、bottom-lock、流式缓冲 | 不整体移植 Electron 应用；不采用两秒后自动折叠 |
+| ACP UI | `cd9c3cb464a4b321bff652101953a64c07473e31` | Vue/Tauri ACP 客户端结构、会话列表、模型/模式 picker、紧凑 tool status 视觉语言、traffic monitor/diagnostics 分层 | 不采用无条件滚到底；不把 thought/tool 附着到同一 assistant message 而破坏真实时序；不直接使用 unsanitized `marked` 输出 |
 | ACP Components | `1b5ab3a1dbdcd194e2550b710d652d9d9670f48c` | 有序 `parts`、约 16ms 批处理、边界前 flush、虚拟列表 | 思考完成后强制折叠不采用 |
 | Obsidian Agent Client | `89e2d75c4e35e78aaaa21b8a6e7ca34e4e0ce099` | 轻量、严格时序的 Thought / Tool / Reply；接近底部才跟随 | 不采用只适合 Obsidian 的宿主集成 |
 | Nori CLI | `3fce409322c643e6d62aabfac55fb26da7c55843` | 事件语义化、简洁动作标题、版本化完整 transcript | 主视图不隐藏用户希望看到的阶段思考 |
@@ -112,6 +113,23 @@ user-collapsed
 - 继续输入、取消任务、打开完整窗口。
 
 完整窗口展示全部时间线、展开详情、历史任务和诊断入口。菜单栏浮层不承载完整原始 transcript。
+
+## 2026-07-15 补充：ACP UI / Harnss 对当前 Phase 4 的启发
+
+用户明确指出“体验点是参考开源实现，不是之前自己做的那一版”。因此 Phase 4 不应只是把现有最小 `TimelineItemCard` 美化，而要把开源客户端的可读性模式落到 GrokTask 自己的严格时序模型里。
+
+可借鉴：
+
+- ACP UI 的完整 app 信息架构：会话列表、chat header、模型/模式选择、权限对话、traffic/diagnostics 与主对话分层。GrokTask Phase 4 可借鉴其“主对话保持干净，诊断另放入口”的产品结构。
+- ACP UI 的 tool 状态视觉语言：不同状态使用 icon、颜色、短标题与路径辅助信息，让用户一眼知道“正在做什么”。GrokTask 应保留这种轻量行，但 tool 仍必须是独立 timeline item，不挂到某条 assistant message 里。
+- Harnss 的 agent 工作台方向：多任务/多 agent 可视化、丰富工具展示、内置终端/浏览器/诊断能力。GrokTask 当前只服务 Grok delegation，可借鉴“工具详情按类型渲染”，不要扩成通用多 agent 工作台。
+
+明确反模式：
+
+- ACP UI 当前 chat 代码对新 message 直接滚到底；GrokTask 必须继续使用 `following-tail / detached-by-user` 状态机。
+- ACP UI 将 thought 与 toolCalls 附着在 assistant message 上；GrokTask 必须保留 Thought → Tool → Thought → Reply 的真实顺序。
+- ACP UI 使用 `marked` 直接渲染；GrokTask 必须继续使用安全 Markdown 渲染/净化策略。
+- 不复制任何开源项目代码。可以借鉴信息架构与交互模式；如未来复制 MIT/Apache 代码，必须在 LICENSE/NOTICE 中保留归属。
 
 ## ACP 生命周期约束
 

@@ -1,6 +1,7 @@
 /**
- * Safe subset Markdown → HTML for final assistant replies.
- * No raw HTML passthrough, no script, no javascript: URLs.
+ * Safe subset Markdown → HTML for final assistant replies and expanded thoughts.
+ * GFM-ish: paragraphs, headings, lists, task lists, blockquotes, tables,
+ * links, inline code, fenced code. No raw HTML, script, or dangerous URLs.
  */
 
 function escapeHtml(s: string): string {
@@ -53,21 +54,26 @@ export function sanitizeUrl(url: string): string | null {
 
   // Relative paths ok (no scheme). Reject unknown schemes; also reject if
   // control-stripped form looks like a scheme (e.g. `java\nscript:…`).
-  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t) && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(scheme)) {
+  if (
+    !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t) &&
+    !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(scheme)
+  ) {
     return t;
   }
   return null;
 }
 
-/** Inline markdown (bold, italic, code, links) on already-escaped-or-raw text. */
+/** Inline markdown (bold, italic, code, links, strikethrough) on raw text. */
 function renderInline(raw: string): string {
   let s = escapeHtml(raw);
-  // code
+  // code first so markers inside code stay literal
   s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   // bold
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   // italic
   s = s.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>");
+  // strikethrough
+  s = s.replace(/~~([^~]+)~~/g, "<del>$1</del>");
   // links [text](url)
   s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text, url) => {
     const safe = sanitizeUrl(url);
@@ -77,9 +83,27 @@ function renderInline(raw: string): string {
   return s;
 }
 
+function isTableSeparator(line: string): boolean {
+  // |---|:---| or ---|---
+  const t = line.trim();
+  if (!t.includes("-")) return false;
+  return /^\|?[\s:|-]+\|[\s:|-]*\|?$/.test(t) && /-+/.test(t);
+}
+
+function splitTableRow(line: string): string[] {
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
+  return t.split("|").map((c) => c.trim());
+}
+
+function isTaskListItem(line: string): RegExpMatchArray | null {
+  return line.match(/^[-*+]\s+\[([ xX])\]\s+(.*)$/);
+}
+
 /**
  * Convert a GFM-ish subset to safe HTML.
- * Streaming mode can call this on partial text.
+ * Streaming mode can call this on partial text; unclosed fences render as pre.
  */
 export function renderMarkdown(source: string): string {
   if (!source) return "";
@@ -89,13 +113,15 @@ export function renderMarkdown(source: string): string {
   let inCode = false;
   let codeLang = "";
   let codeBuf: string[] = [];
-  let listType: "ul" | "ol" | null = null;
+  let listType: "ul" | "ol" | "task" | null = null;
 
   const closeList = () => {
-    if (listType) {
+    if (listType === "task") {
+      out.push("</ul>");
+    } else if (listType) {
       out.push(listType === "ul" ? "</ul>" : "</ol>");
-      listType = null;
     }
+    listType = null;
   };
 
   while (i < lines.length) {
@@ -124,6 +150,37 @@ export function renderMarkdown(source: string): string {
       continue;
     }
 
+    // Tables: header + separator + body rows
+    if (
+      i + 1 < lines.length &&
+      line.includes("|") &&
+      isTableSeparator(lines[i + 1])
+    ) {
+      closeList();
+      const headers = splitTableRow(line);
+      i += 2; // skip separator
+      const bodyRows: string[][] = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+        bodyRows.push(splitTableRow(lines[i]));
+        i += 1;
+      }
+      const thead = headers
+        .map((h) => `<th>${renderInline(h)}</th>`)
+        .join("");
+      const tbody = bodyRows
+        .map((cells) => {
+          const tds = headers
+            .map((_, idx) => `<td>${renderInline(cells[idx] ?? "")}</td>`)
+            .join("");
+          return `<tr>${tds}</tr>`;
+        })
+        .join("");
+      out.push(
+        `<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`,
+      );
+      continue;
+    }
+
     if (/^#{1,6}\s+/.test(line)) {
       closeList();
       const level = line.match(/^#+/)![0].length;
@@ -133,14 +190,38 @@ export function renderMarkdown(source: string): string {
       continue;
     }
 
+    // Multi-line blockquote
     if (/^>\s?/.test(line)) {
       closeList();
-      out.push(`<blockquote>${renderInline(line.replace(/^>\s?/, ""))}</blockquote>`);
+      const quoteLines: string[] = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) {
+        quoteLines.push(lines[i].replace(/^>\s?/, ""));
+        i += 1;
+      }
+      // Blank line inside quote (">") continues
+      out.push(
+        `<blockquote>${quoteLines.map((ql) => `<p>${renderInline(ql)}</p>`).join("")}</blockquote>`,
+      );
+      continue;
+    }
+
+    // Task list
+    const task = isTaskListItem(line);
+    if (task) {
+      if (listType !== "task") {
+        closeList();
+        out.push('<ul class="task-list">');
+        listType = "task";
+      }
+      const checked = task[1].toLowerCase() === "x";
+      out.push(
+        `<li class="task-list-item"><input type="checkbox" disabled${checked ? " checked" : ""}/> ${renderInline(task[2])}</li>`,
+      );
       i += 1;
       continue;
     }
 
-    const ul = line.match(/^[-*]\s+(.*)$/);
+    const ul = line.match(/^[-*+]\s+(.*)$/);
     if (ul) {
       if (listType !== "ul") {
         closeList();
@@ -170,30 +251,71 @@ export function renderMarkdown(source: string): string {
       continue;
     }
 
+    // Horizontal rule
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+      closeList();
+      out.push("<hr/>");
+      i += 1;
+      continue;
+    }
+
     closeList();
     out.push(`<p>${renderInline(line)}</p>`);
     i += 1;
   }
 
   if (inCode) {
-    // Unclosed fence while streaming — show as pre
     out.push(`<pre><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`);
   }
   closeList();
   return out.join("\n");
 }
 
+/** Forbidden protocol tokens that must never appear as visible primary UI. */
+export const FORBIDDEN_UI_TOKENS = [
+  "session/update",
+  "tool_call_update",
+  "agent_thought_chunk",
+  "_x.ai",
+  '"jsonrpc"',
+] as const;
+
 /** True if a display string looks like raw protocol JSON we must not show. */
 export function looksLikeRawAcpJson(s: string): boolean {
   const t = s.trim();
   if (!t.startsWith("{") && !t.startsWith("[")) return false;
-  if (
-    t.includes("session/update") ||
-    t.includes("tool_call_update") ||
-    t.includes("agent_thought_chunk") ||
-    t.includes('"jsonrpc"')
-  ) {
-    return true;
+  return containsForbiddenUiToken(t);
+}
+
+/**
+ * True when text embeds raw ACP / protocol control labels even if it is not
+ * full JSON (e.g. "ACP 通知：_x.ai/session_notification", "session/update").
+ */
+export function containsForbiddenUiToken(s: string): boolean {
+  const t = s.trim();
+  if (!t) return false;
+  for (const token of FORBIDDEN_UI_TOKENS) {
+    if (t.includes(token)) return true;
   }
   return false;
+}
+
+/** True when a string must not be used as primary UI copy. */
+export function isUnsafePrimaryUiText(s: string): boolean {
+  const t = s.trim();
+  if (!t) return false;
+  return looksLikeRawAcpJson(t) || containsForbiddenUiToken(t);
+}
+
+/**
+ * Return human-facing text, or `fallback` when the candidate is empty or
+ * contains protocol/control labels / raw ACP JSON.
+ */
+export function safeDisplayLine(
+  candidate: string | undefined | null,
+  fallback: string,
+): string {
+  const t = (candidate ?? "").trim();
+  if (!t || isUnsafePrimaryUiText(t)) return fallback;
+  return t;
 }

@@ -7,6 +7,8 @@
   --muted-fg: #4338ca;
   --card: #ffffff;
   --subtle: #6b7280;
+  --danger: #b91c1c;
+  --success: #059669;
   font-family:
     Inter,
     ui-sans-serif,
@@ -26,6 +28,19 @@
     --muted-fg: #c7d2fe;
     --card: #111827;
     --subtle: #9ca3af;
+    --danger: #fca5a5;
+    --success: #34d399;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
