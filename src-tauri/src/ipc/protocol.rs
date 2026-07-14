@@ -235,6 +235,10 @@ pub enum GuiNavCommand {
         /// Optional settings section (e.g. `integrations` for `GrokTask setup`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         section: Option<String>,
+        /// Absolute project path when opened via `GrokTask setup` from a project.
+        /// Absent for older clients or tray/menu launches without a trusted cwd.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     #[serde(rename = "gui.focus")]
     Focus,

@@ -35,6 +35,9 @@ struct HostState {
     tray_mode: Mutex<TrayMode>,
     popover_visible: Mutex<bool>,
     current_task_id: Mutex<Option<String>>,
+    /// Project cwd last trusted via `GrokTask setup` / OpenSettings with cwd.
+    /// Never derived from the GUI process working directory (unsafe for Finder launches).
+    selected_workspace_cwd: Mutex<Option<String>>,
 }
 
 /// Run the GUI host for the hidden `--gui-host` role.
@@ -145,6 +148,7 @@ fn run_impl(launch: GuiHostLaunch) -> ! {
             tray_mode: Mutex::new(tray_mode),
             popover_visible: Mutex::new(false),
             current_task_id: Mutex::new(None),
+            selected_workspace_cwd: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             commands::settings_get,
@@ -152,6 +156,9 @@ fn run_impl(launch: GuiHostLaunch) -> ! {
             commands::agents_status,
             commands::agents_install,
             commands::agents_remove,
+            commands::agents_workflow_enable,
+            commands::agents_workflow_disable,
+            commands::workspace_cwd,
             commands::doctor_report,
             commands::grok_cli_status,
             commands::daemon_status_text,
@@ -633,6 +640,35 @@ fn open_or_focus_settings(app: &AppHandle, section: Option<&str>) {
         .build();
 }
 
+/// Remember a trusted project workspace path from navigation (e.g. `GrokTask setup`).
+fn remember_workspace_cwd(app: &AppHandle, cwd: Option<&str>) {
+    let Some(raw) = cwd.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if let Some(state) = app.try_state::<HostState>() {
+        if let Ok(mut g) = state.selected_workspace_cwd.lock() {
+            *g = Some(raw.to_string());
+        }
+    }
+}
+
+/// Trusted project cwd for Settings workflow writes. `None` when the host was
+/// opened without `GrokTask setup` (Finder / tray) — never the process cwd.
+pub fn selected_workspace_cwd(app: &AppHandle) -> Option<String> {
+    let state = app.try_state::<HostState>()?;
+    let guard = state.selected_workspace_cwd.lock().ok()?;
+    guard.clone()
+}
+
+/// Pure resolver used by `workspace_cwd` and unit tests: only the stored
+/// project path is accepted; process current_dir is never used as a fallback.
+pub fn resolve_trusted_workspace_cwd(selected: Option<&str>) -> Result<String, String> {
+    match selected.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => Ok(s.to_string()),
+        None => Err("无法解析工作区路径；请从项目目录运行 GrokTask setup".into()),
+    }
+}
+
 fn apply_nav(app: &AppHandle, cmd: GuiNavCommand) {
     match cmd {
         GuiNavCommand::OpenPopover => {
@@ -647,7 +683,8 @@ fn apply_nav(app: &AppHandle, cmd: GuiNavCommand) {
             open_or_focus_main(app, task_id);
         }
         GuiNavCommand::OpenHistory => open_or_focus_history(app),
-        GuiNavCommand::OpenSettings { section } => {
+        GuiNavCommand::OpenSettings { section, cwd } => {
+            remember_workspace_cwd(app, cwd.as_deref());
             open_or_focus_settings(app, section.as_deref());
         }
         GuiNavCommand::Quit => {
@@ -848,12 +885,67 @@ mod tests {
     fn open_settings_with_section_roundtrips() {
         let cmd = GuiNavCommand::OpenSettings {
             section: Some("integrations".into()),
+            cwd: None,
         };
         let v = serde_json::to_value(&cmd).unwrap();
         assert_eq!(v["method"], "gui.open_settings");
         assert_eq!(v["section"], "integrations");
+        assert!(v.get("cwd").is_none());
         let back: GuiNavCommand = serde_json::from_value(v).unwrap();
         assert_eq!(back, cmd);
+    }
+
+    #[test]
+    fn open_settings_with_section_and_cwd_roundtrips() {
+        let cmd = GuiNavCommand::OpenSettings {
+            section: Some("integrations".into()),
+            cwd: Some("/Users/dev/my-project".into()),
+        };
+        let v = serde_json::to_value(&cmd).unwrap();
+        assert_eq!(v["method"], "gui.open_settings");
+        assert_eq!(v["section"], "integrations");
+        assert_eq!(v["cwd"], "/Users/dev/my-project");
+        let back: GuiNavCommand = serde_json::from_value(v).unwrap();
+        assert_eq!(back, cmd);
+    }
+
+    #[test]
+    fn open_settings_legacy_without_cwd_deserializes() {
+        // Backward compatibility: older CLI/clients omit cwd entirely.
+        let v = serde_json::json!({
+            "method": "gui.open_settings",
+            "section": "integrations"
+        });
+        let cmd: GuiNavCommand = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            cmd,
+            GuiNavCommand::OpenSettings {
+                section: Some("integrations".into()),
+                cwd: None,
+            }
+        );
+    }
+
+    #[test]
+    fn trusted_workspace_cwd_rejects_missing_and_never_uses_slash() {
+        // Without a selected project, UI must not treat `/` or process cwd as writable.
+        assert!(resolve_trusted_workspace_cwd(None).is_err());
+        assert!(resolve_trusted_workspace_cwd(Some("")).is_err());
+        assert!(resolve_trusted_workspace_cwd(Some("   ")).is_err());
+        let err = resolve_trusted_workspace_cwd(None).unwrap_err();
+        assert!(
+            err.contains("GrokTask setup") || err.contains("无法解析"),
+            "error should guide user to setup from project: {err}"
+        );
+        assert_eq!(
+            resolve_trusted_workspace_cwd(Some("/Users/dev/proj")).unwrap(),
+            "/Users/dev/proj"
+        );
+        // Explicitly not process cwd / root fallback.
+        assert_ne!(
+            resolve_trusted_workspace_cwd(None).unwrap_or_else(|_| String::new()),
+            "/"
+        );
     }
 
     #[test]

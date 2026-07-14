@@ -10,6 +10,9 @@ export type TrayMode = "off" | "active" | "always";
 export type IntegrationStatus =
   "not_installed" | "installed" | "outdated" | "invalid_config" | "unavailable";
 
+export type WorkflowStatus =
+  "not_enabled" | "enabled" | "outdated" | "invalid_file" | "unavailable";
+
 export type AgentId = "codex" | "claude";
 
 export interface SettingsSnapshot {
@@ -25,12 +28,18 @@ export interface SettingsSnapshot {
 
 export interface AgentIntegrationStatus {
   agent: AgentId;
+  /** MCP server status */
   status: IntegrationStatus;
   configPath: string;
   binaryPath: string;
   detail?: string;
   canWrite: boolean;
   canRemove: boolean;
+  /** Project workflow instruction status */
+  workflowStatus: WorkflowStatus;
+  workflowPath: string;
+  workflowDetail?: string;
+  canWriteWorkflow: boolean;
 }
 
 export interface AgentStatusReport {
@@ -69,8 +78,8 @@ export interface DoctorReport {
 
 /** In-memory mock for tests / non-Tauri web. */
 const mockSettings: SettingsSnapshot = {
-  trayMode: "off",
-  language: "system",
+  trayMode: "active",
+  language: "zh-CN",
   theme: "system",
   historyLimit: 200,
   popoverWidth: 420,
@@ -79,23 +88,32 @@ const mockSettings: SettingsSnapshot = {
   version: "0.1.0",
 };
 
+let mockWorkspaceCwd = "/mock/workspace";
+
+function defaultAgent(
+  agent: AgentId,
+  status: IntegrationStatus = "not_installed",
+  workflowStatus: WorkflowStatus = "not_enabled",
+): AgentIntegrationStatus {
+  const filename = agent === "codex" ? "AGENTS.md" : "CLAUDE.md";
+  const configPath =
+    agent === "codex" ? "~/.codex/config.toml" : "~/.claude.json";
+  return {
+    agent,
+    status,
+    configPath,
+    binaryPath: "/mock/GrokTask",
+    canWrite: true,
+    canRemove: true,
+    workflowStatus,
+    workflowPath: `${mockWorkspaceCwd}/${filename}`,
+    canWriteWorkflow: true,
+  };
+}
+
 let mockAgents: AgentIntegrationStatus[] = [
-  {
-    agent: "codex",
-    status: "not_installed",
-    configPath: "~/.codex/config.toml",
-    binaryPath: "/mock/GrokTask",
-    canWrite: true,
-    canRemove: true,
-  },
-  {
-    agent: "claude",
-    status: "not_installed",
-    configPath: "~/.claude.json",
-    binaryPath: "/mock/GrokTask",
-    canWrite: true,
-    canRemove: true,
-  },
+  defaultAgent("codex"),
+  defaultAgent("claude"),
 ];
 
 async function invokeTauri<T>(
@@ -121,8 +139,19 @@ export async function setTrayMode(mode: TrayMode): Promise<SettingsSnapshot> {
   return invokeTauri<SettingsSnapshot>("settings_set_tray_mode", { mode });
 }
 
+export async function fetchWorkspaceCwd(): Promise<string> {
+  if (!isTauriRuntime()) {
+    if (!mockWorkspaceCwd.trim()) {
+      throw new Error("无法解析工作区路径；请从项目目录运行 GrokTask setup");
+    }
+    return mockWorkspaceCwd;
+  }
+  return invokeTauri<string>("workspace_cwd");
+}
+
 export async function fetchAgentsStatus(
   agent?: AgentId,
+  cwd?: string,
 ): Promise<AgentStatusReport> {
   if (!isTauriRuntime()) {
     const agents = agent
@@ -132,10 +161,14 @@ export async function fetchAgentsStatus(
   }
   return invokeTauri<AgentStatusReport>("agents_status", {
     agent: agent ?? null,
+    cwd: cwd ?? null,
   });
 }
 
-export async function installAgent(agent: AgentId): Promise<ActionResult> {
+export async function installAgent(
+  agent: AgentId,
+  cwd?: string,
+): Promise<ActionResult> {
   if (!isTauriRuntime()) {
     mockAgents = mockAgents.map((a) =>
       a.agent === agent
@@ -145,22 +178,26 @@ export async function installAgent(agent: AgentId): Promise<ActionResult> {
     const status = mockAgents.find((a) => a.agent === agent);
     return {
       ok: true,
-      message:
-        "Installed/updated MCP entry. Restart or reload MCP in the agent to apply.",
+      message: "已安装/更新 MCP 条目。请在 Agent 中重启或重新加载 MCP。",
       status,
     };
   }
-  return invokeTauri<ActionResult>("agents_install", { agent });
+  return invokeTauri<ActionResult>("agents_install", {
+    agent,
+    cwd: cwd ?? null,
+  });
 }
 
-export async function removeAgent(agent: AgentId): Promise<ActionResult> {
+export async function removeAgent(
+  agent: AgentId,
+  cwd?: string,
+): Promise<ActionResult> {
   if (!isTauriRuntime()) {
     const target = mockAgents.find((a) => a.agent === agent);
     if (target && !target.canRemove) {
       return {
         ok: false,
-        message:
-          target.detail ?? "Cannot remove: config invalid or unavailable",
+        message: target.detail ?? "无法移除：配置无效或不可用",
       };
     }
     mockAgents = mockAgents.map((a) =>
@@ -171,11 +208,82 @@ export async function removeAgent(agent: AgentId): Promise<ActionResult> {
     const status = mockAgents.find((a) => a.agent === agent);
     return {
       ok: true,
-      message: "Removed MCP entry. Reload MCP in the agent to apply.",
+      message: "已移除 MCP 条目。请在 Agent 中重新加载 MCP。",
       status,
     };
   }
-  return invokeTauri<ActionResult>("agents_remove", { agent });
+  return invokeTauri<ActionResult>("agents_remove", {
+    agent,
+    cwd: cwd ?? null,
+  });
+}
+
+export async function enableWorkflow(
+  agent: AgentId,
+  cwd?: string,
+): Promise<ActionResult> {
+  if (!isTauriRuntime()) {
+    const target = mockAgents.find((a) => a.agent === agent);
+    if (target && !target.canWriteWorkflow) {
+      return {
+        ok: false,
+        message: target.workflowDetail ?? "无法写入工作流指令文件",
+      };
+    }
+    mockAgents = mockAgents.map((a) =>
+      a.agent === agent
+        ? {
+            ...a,
+            workflowStatus: "enabled" as const,
+            workflowDetail: undefined,
+          }
+        : a,
+    );
+    const status = mockAgents.find((a) => a.agent === agent);
+    return {
+      ok: true,
+      message: `已写入协作指令到 ${status?.workflowPath ?? "指令文件"}。`,
+      status,
+    };
+  }
+  return invokeTauri<ActionResult>("agents_workflow_enable", {
+    agent,
+    cwd: cwd ?? null,
+  });
+}
+
+export async function disableWorkflow(
+  agent: AgentId,
+  cwd?: string,
+): Promise<ActionResult> {
+  if (!isTauriRuntime()) {
+    const target = mockAgents.find((a) => a.agent === agent);
+    if (target && !target.canWriteWorkflow) {
+      return {
+        ok: false,
+        message: target.workflowDetail ?? "无法修改工作流指令文件",
+      };
+    }
+    mockAgents = mockAgents.map((a) =>
+      a.agent === agent
+        ? {
+            ...a,
+            workflowStatus: "not_enabled" as const,
+            workflowDetail: undefined,
+          }
+        : a,
+    );
+    const status = mockAgents.find((a) => a.agent === agent);
+    return {
+      ok: true,
+      message: "已移除 GrokTask 托管协作指令区块。",
+      status,
+    };
+  }
+  return invokeTauri<ActionResult>("agents_workflow_disable", {
+    agent,
+    cwd: cwd ?? null,
+  });
 }
 
 export async function fetchDoctorReport(): Promise<DoctorReport> {
@@ -187,7 +295,7 @@ export async function fetchDoctorReport(): Promise<DoctorReport> {
       grok: {
         state: "not_found",
         guidance:
-          "Grok CLI not found. Install from https://docs.x.ai (mock mode).",
+          "未找到 Grok CLI。请从 https://docs.x.ai 安装（当前为 mock 模式）。",
         checkedAt: new Date().toISOString(),
       },
       tray: {
@@ -214,36 +322,99 @@ export async function restartDaemon(force = false): Promise<string> {
   return invokeTauri<string>("daemon_restart", { force });
 }
 
+/** Open/focus the full app window (from popover). */
+export async function openFullWindow(taskId?: string): Promise<void> {
+  if (!isTauriRuntime()) {
+    // Web/test: navigate within SPA shell.
+    const params = new URLSearchParams(window.location.search);
+    params.set("view", "task");
+    if (taskId) params.set("task", taskId);
+    params.delete("section");
+    const next = `${window.location.pathname}?${params.toString()}`;
+    window.history.replaceState({}, "", next);
+    window.dispatchEvent(
+      new CustomEvent("groktask-navigate", {
+        detail: { view: "task", taskId },
+      }),
+    );
+    return;
+  }
+  // Prefer focusing main via a lightweight eval-free path: open task window
+  // by setting location of a known surface is not available; use invoke if we
+  // add a command later. For now, navigate current window if it is the main
+  // surface, else open via window label through Tauri plugin is out of scope —
+  // emit navigate for same-document shells and try core open.
+  try {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const main = await WebviewWindow.getByLabel("main");
+    if (main) {
+      await main.show();
+      await main.setFocus();
+      return;
+    }
+  } catch {
+    // fall through
+  }
+  window.dispatchEvent(
+    new CustomEvent("groktask-navigate", {
+      detail: { view: "task", taskId },
+    }),
+  );
+}
+
 /** Test helper: reset mocks between tests. */
 export function resetSettingsMocksForTests(): void {
-  mockSettings.trayMode = "off";
+  mockSettings.trayMode = "active";
   mockSettings.historyLimit = 200;
-  mockAgents = [
-    {
-      agent: "codex",
-      status: "not_installed",
-      configPath: "~/.codex/config.toml",
-      binaryPath: "/mock/GrokTask",
-      canWrite: true,
-      canRemove: true,
-    },
-    {
-      agent: "claude",
-      status: "not_installed",
-      configPath: "~/.claude.json",
-      binaryPath: "/mock/GrokTask",
-      canWrite: true,
-      canRemove: true,
-    },
-  ];
+  mockSettings.language = "zh-CN";
+  mockWorkspaceCwd = "/mock/workspace";
+  mockAgents = [defaultAgent("codex"), defaultAgent("claude")];
 }
 
 /** Test helper: inject an agent status. */
-export function setMockAgentStatus(status: AgentIntegrationStatus): void {
+export function setMockAgentStatus(
+  status: Partial<AgentIntegrationStatus> &
+    Pick<AgentIntegrationStatus, "agent">,
+): void {
+  // Fill workflow defaults when older tests omit them.
+  const full: AgentIntegrationStatus = {
+    status: "not_installed",
+    configPath:
+      status.agent === "codex" ? "~/.codex/config.toml" : "~/.claude.json",
+    binaryPath: "/mock/GrokTask",
+    canWrite: true,
+    canRemove: true,
+    workflowStatus: "not_enabled",
+    workflowPath: `${mockWorkspaceCwd}/${status.agent === "codex" ? "AGENTS.md" : "CLAUDE.md"}`,
+    canWriteWorkflow: true,
+    ...status,
+  };
   mockAgents = mockAgents.map((a) =>
-    a.agent === status.agent ? { ...status } : a,
+    a.agent === full.agent ? { ...full } : a,
   );
-  if (!mockAgents.some((a) => a.agent === status.agent)) {
-    mockAgents.push({ ...status });
+  if (!mockAgents.some((a) => a.agent === full.agent)) {
+    mockAgents.push({ ...full });
   }
+}
+
+/** Test helper: set mock workspace cwd. Empty string = no trusted project. */
+export function setMockWorkspaceCwd(cwd: string): void {
+  mockWorkspaceCwd = cwd;
+  const hasWs = cwd.trim().length > 0;
+  mockAgents = mockAgents.map((a) => {
+    const filename = a.agent === "codex" ? "AGENTS.md" : "CLAUDE.md";
+    if (!hasWs) {
+      return {
+        ...a,
+        workflowPath: `<workspace>/${filename}`,
+        workflowStatus: "unavailable" as const,
+        canWriteWorkflow: false,
+        workflowDetail: "无法解析工作区路径；请从项目目录运行 GrokTask setup",
+      };
+    }
+    return {
+      ...a,
+      workflowPath: `${cwd}/${filename}`,
+    };
+  });
 }

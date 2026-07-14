@@ -1,0 +1,296 @@
+# Phase 7 Agent workflow injection and Chinese desktop UX brief
+
+Status: ready to delegate to Grok. Codex owns this brief and review; Grok owns all product/test code.
+
+## Why this phase exists
+
+The current GrokTask implementation is a standalone MCP task runner. It can install a `groktask` MCP server for Codex and Claude Code, run Grok tasks, and show per-task ACP timelines. That is useful, but it is not the product target.
+
+The product target is closer to AskHuman:
+
+- the desktop app lets the user enable/disable GrokTask for Codex and Claude Code;
+- enabling does more than install MCP: it injects clear managed instructions so the host agent proactively calls GrokTask during coding;
+- Codex/Claude should use GrokTask for implementation assistance, review, fix, and re-review loops until the user's requirement is actually done;
+- the app UI is Chinese by default and feels like a native local tool;
+- the menu-bar popover shows live ACP activity;
+- the full window can browse all ACP/task records, not only a single task detail.
+
+This phase corrects the product direction without reviving the old Codex plugin architecture. GrokTask remains a standalone binary and MCP server.
+
+## References
+
+- `/Users/qian/project/AskHuman` is the primary UX reference for:
+  - agent enable/disable switches;
+  - managed instruction blocks;
+  - blocking-tool ergonomics;
+  - local desktop menu-bar behavior.
+- Current code:
+  - `src/views/SettingsView.vue`
+  - `src/views/HistoryView.vue`
+  - `src/views/TaskView.vue`
+  - `src/views/PopoverView.vue`
+  - `src-tauri/src/integrations/`
+  - `src-tauri/src/app/gui_host.rs`
+  - `src-tauri/src/app/tray.rs`
+  - `src-tauri/src/app/windows.rs`
+  - `src-tauri/src/app/mod.rs`
+  - `src-tauri/src/cli/mod.rs`
+  - `src-tauri/src/mcp/`
+  - `src-tauri/src/daemon/task_manager.rs`
+- Existing specs to update or follow:
+  - `docs/specs/product.md`
+  - `docs/specs/integrations.md`
+  - `docs/specs/cli-mcp.md`
+  - `docs/specs/conversation-stream.md`
+  - `docs/acceptance.md`
+
+## Product model
+
+GrokTask has two separate integration layers per host agent:
+
+1. **MCP Server**
+   - Installs/removes the `groktask` MCP server entry.
+   - This only makes tools available.
+   - It does not by itself change the agent's behavior.
+
+2. **Workflow Instructions**
+   - Adds/removes a managed instruction block for Codex or Claude Code.
+   - This tells the agent when and how to call GrokTask proactively.
+   - This is the missing layer in the current implementation.
+
+Settings must show both layers independently, because advanced users may want MCP installed without workflow injection.
+
+## Managed instruction targets
+
+Implement safe managed-block injection. Do not silently rewrite unrelated user content.
+
+### Codex
+
+Primary target for this repository/workspace:
+
+```text
+<workspace>/AGENTS.md
+```
+
+If the file does not exist, create it.
+
+If the file exists, preserve all user content and insert/update only the managed block:
+
+```markdown
+<!-- GrokTask:begin DO NOT EDIT (managed by GrokTask) -->
+...
+<!-- GrokTask:end -->
+```
+
+Do not remove or alter AskHuman managed blocks.
+
+### Claude Code
+
+Primary target for this repository/workspace:
+
+```text
+<workspace>/CLAUDE.md
+```
+
+Use the same managed block markers:
+
+```markdown
+<!-- GrokTask:begin DO NOT EDIT (managed by GrokTask) -->
+...
+<!-- GrokTask:end -->
+```
+
+If Claude Code's actual preferred project-instruction filename is already represented in this codebase or AskHuman reference, use that. Otherwise implement `CLAUDE.md` and keep the path visible in the UI so users can verify it.
+
+### Scope
+
+This phase may implement project-level injection only. Global injection can be shown as disabled/future if necessary. The UI must be honest about which file is being modified.
+
+## Default managed instruction content
+
+The injected block should be concise, forceful, and operational. It must teach the host agent to use the GrokTask MCP server as part of its normal coding workflow.
+
+Use Chinese user-facing language where appropriate, but the instruction content may be bilingual if that helps the agent.
+
+Suggested content:
+
+```markdown
+## GrokTask 协作协议
+
+当用户要求实现、重构、排查、修复或 review 代码时，你可以主动使用 `groktask` MCP 工具把独立工作交给 Grok Build。
+
+### 默认循环
+
+1. 先理解用户需求和当前仓库状态。
+2. 对非平凡代码任务，调用 GrokTask：
+   - 需要 Grok 修改代码时使用 `run` 或 `start`，`mode` 设为 `write`；
+   - 只需要第二意见、审查或诊断时使用 `mode` 设为 `read`。
+3. Grok 完成后，你必须 review Grok 的改动，不要盲目信任。
+4. 如果 review 发现问题，再调用 GrokTask 让 Grok 修复；然后继续 review。
+5. 重复“Grok 修改 → 你 review → Grok 修复”，直到没有阻塞问题，或必须让用户做产品/权限决策。
+6. 你负责最终验证、总结和交付；GrokTask/Grok 是协作执行者，不替代你的判断。
+
+### 约束
+
+- 不要为了微小、显然可直接完成的改动调用 GrokTask。
+- 不要让 Grok 自动提交、推送、创建 PR 或扩大工作目录，除非用户明确要求。
+- 不要把 secrets、token、个人敏感信息发送给 GrokTask。
+- 如果 GrokTask 返回失败、取消或部分结果，如实报告并决定下一步。
+- 如果连续两轮修复仍无法收敛，停止循环并向用户说明阻塞点。
+```
+
+The exact text can be improved by Grok, but it must preserve this behavior.
+
+## UI requirements
+
+The UI must default to Simplified Chinese. English-only labels like "Settings", "Integrations", "History", "Phase 5", "Install", "Remove" should be replaced.
+
+### Main surfaces
+
+Use three user-facing concepts:
+
+1. **工具开关**
+   - Shows Codex and Claude Code cards.
+   - Each card has:
+     - MCP server status and install/remove/update button;
+     - workflow instruction status and enable/disable/update button;
+     - target config/instruction file path;
+     - current binary path;
+     - clear post-change guidance.
+   - This replaces the current English-only Integrations page as the primary Settings page.
+
+2. **ACP 记录**
+   - Shows all tasks/turns in a readable global activity/history view.
+   - The user should be able to see recent ACP/Grok records across all tasks, then open a task detail.
+   - Do not show raw ACP JSON in normal view.
+   - Show semantic items: user prompt, thought/reasoning summary, tool action, file/action text, final answer, error/cancel status.
+
+3. **菜单栏实时面板**
+   - macOS menu-bar/status item should be visible when tray mode is `active` or `always`.
+   - Left-click opens an anchored popover with the current/latest live ACP record stream.
+   - Right-click opens a native menu.
+   - The popover must not look like a detached random full window. It should be compact, Chinese, and focused on live activity.
+
+### Settings tab bug
+
+Currently clicking Settings tabs changes visible content but the URL/focus can remain on `section=integrations`, creating inconsistent “click twice” behavior. Fix this:
+
+- clicking a Settings tab updates the internal state, visible content, and URL/query consistently;
+- opening `GrokTask setup` with `section=integrations` must select the integrations/tools section exactly once;
+- repeated clicks must not be required.
+
+### History page
+
+The current history page is too placeholder-like. Improve it:
+
+- Chinese labels;
+- clear grouping by time/status;
+- useful empty/error/loading states;
+- clicking a record opens the full task detail reliably;
+- search/filter controls should not dominate the page when there are only a few tasks;
+- display all available tasks from daemon, not fixture/demo records.
+
+### Navigation
+
+The current app can end up showing popover content when the user expects the full window. Fix/clarify:
+
+- full app window should have the full navigation shell;
+- popover should have compact popover layout;
+- "完整窗口" from popover must open/focus the full window;
+- CLI `GrokTask app` should open the full window, not leave the user stuck in popover.
+
+## Backend requirements
+
+### Integration status DTOs
+
+Extend status reporting so each agent has two statuses:
+
+```text
+mcp: not_installed | installed | outdated | invalid_config | unavailable
+workflow: not_enabled | enabled | outdated | invalid_file | unavailable
+```
+
+Keep old fields if needed for compatibility, but frontend should display both layers.
+
+### New commands / CLI
+
+Add backend support for workflow instruction management:
+
+```text
+GrokTask agents workflow status [codex|claude] [--cwd PATH]
+GrokTask agents workflow enable codex|claude [--cwd PATH]
+GrokTask agents workflow disable codex|claude [--cwd PATH]
+```
+
+The UI can call equivalent Tauri commands.
+
+Default `--cwd` should be current working directory for CLI. For the desktop UI, use the app's current workspace when available; if not available, display the target as the current repository path used by this app build/session and make it visible. Do not write to an invisible surprising path.
+
+### Safety
+
+- Managed block operations must be idempotent.
+- Enabling twice must produce no diff.
+- Disabling removes only the GrokTask block.
+- If a file contains a malformed begin/end marker pair, do not write; show a clear error.
+- Preserve user content, line endings as reasonably as possible, and final newline.
+- Never edit AskHuman managed blocks.
+
+## Tests required
+
+Add deterministic tests for:
+
+1. Managed block injection
+   - create missing AGENTS.md / CLAUDE.md;
+   - append to existing file;
+   - update old GrokTask block;
+   - disable removes only GrokTask block;
+   - malformed marker refuses to write;
+   - AskHuman block is preserved.
+
+2. Integration status
+   - MCP installed but workflow disabled;
+   - MCP installed + workflow enabled;
+   - workflow outdated;
+   - invalid instruction file.
+
+3. CLI
+   - workflow status/enable/disable routes work with temp cwd;
+   - no real user config is touched during tests.
+
+4. Frontend
+   - Chinese labels render by default;
+   - tools page shows MCP and workflow switches separately;
+   - Settings tab click changes selected section without requiring a second click;
+   - History/ACP records page renders task list and opens details;
+   - Popover “完整窗口” opens/focuses full layout path.
+
+5. Existing regression gates
+   - `pnpm format:check`
+   - `pnpm test`
+   - `pnpm build`
+   - `cargo fmt --manifest-path src-tauri/Cargo.toml --check`
+   - `cargo test --manifest-path src-tauri/Cargo.toml --all-features`
+   - `pnpm tauri build --bundles app`
+
+## Implementation notes
+
+- Code changes are delegated to Grok.
+- Do not remove the existing MCP install/remove functionality.
+- Do not change GrokTask into a Codex plugin.
+- Do not add localhost dashboard back.
+- Do not auto-enable workflow instructions when the user only installs MCP.
+- Do not silently write to global instruction files.
+- Prefer simple, reliable UI over decorative complexity.
+
+## Acceptance criteria
+
+This phase is acceptable when:
+
+- a user can open GrokTask, see Chinese UI, and clearly enable/disable Codex/Claude MCP plus workflow instructions;
+- the target AGENTS.md / CLAUDE.md receives a safe GrokTask managed block;
+- a host agent reading that block would know to call GrokTask for implementation/review/fix loops;
+- the app has an ACP records/history view that is useful without raw JSON noise;
+- macOS menu-bar popover opens and shows recent/live activity;
+- Settings tab navigation is single-click reliable;
+- tests and packaged app build pass;
+- Codex review finds no blocking issues.

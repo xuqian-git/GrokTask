@@ -1,0 +1,483 @@
+//! Project-level workflow instruction managed blocks for Codex / Claude Code.
+//!
+//! Injects a GrokTask-managed instruction block into workspace instruction
+//! files so host agents proactively call the `groktask` MCP server.
+//!
+//! Targets (project-level only for this phase):
+//! - Codex: `<workspace>/AGENTS.md`
+//! - Claude Code: `<workspace>/CLAUDE.md`
+//!
+//! Never edits AskHuman managed blocks. Operations are idempotent and refuse
+//! to write when markers are malformed.
+
+use super::types::{AgentId, IntegrationError, WorkflowStatus};
+use crate::config::atomic_write;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Managed block start marker (must match end pair).
+pub const BLOCK_BEGIN: &str = "<!-- GrokTask:begin DO NOT EDIT (managed by GrokTask) -->";
+/// Managed block end marker.
+pub const BLOCK_END: &str = "<!-- GrokTask:end -->";
+
+/// AskHuman block markers — never touch these regions.
+const ASKHUMAN_BEGIN: &str = "<!-- AskHuman:begin";
+const ASKHUMAN_END: &str = "<!-- AskHuman:end -->";
+
+/// Default instruction body injected inside the managed block.
+pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
+
+当用户要求实现、重构、排查、修复或 review 代码时，你可以主动使用 `groktask` MCP 工具把独立工作交给 Grok Build。
+
+### 默认循环
+
+1. 先理解用户需求和当前仓库状态。
+2. 对非平凡代码任务，调用 GrokTask：
+   - 需要 Grok 修改代码时使用 `run` 或 `start`，`mode` 设为 `write`；
+   - 只需要第二意见、审查或诊断时使用 `mode` 设为 `read`。
+3. Grok 完成后，你必须 review Grok 的改动，不要盲目信任。
+4. 如果 review 发现问题，再调用 GrokTask 让 Grok 修复；然后继续 review。
+5. 重复“Grok 修改 → 你 review → Grok 修复”，直到没有阻塞问题，或必须让用户做产品/权限决策。
+6. 你负责最终验证、总结和交付；GrokTask/Grok 是协作执行者，不替代你的判断。
+
+### 约束
+
+- 不要为了微小、显然可直接完成的改动调用 GrokTask。
+- 不要让 Grok 自动提交、推送、创建 PR 或扩大工作目录，除非用户明确要求。
+- 不要把 secrets、token、个人敏感信息发送给 GrokTask。
+- 如果 GrokTask 返回失败、取消或部分结果，如实报告并决定下一步。
+- 如果连续两轮修复仍无法收敛，停止循环并向用户说明阻塞点。
+"#;
+
+/// Instruction file relative name for each agent (project-level).
+pub fn instruction_filename(agent: AgentId) -> &'static str {
+    match agent {
+        AgentId::Codex => "AGENTS.md",
+        AgentId::Claude => "CLAUDE.md",
+    }
+}
+
+/// Absolute path to the project instruction file for `agent` under `workspace`.
+pub fn instruction_path(workspace: &Path, agent: AgentId) -> PathBuf {
+    workspace.join(instruction_filename(agent))
+}
+
+/// Whether text contains a well-formed GrokTask managed block.
+pub fn has_block(text: &str) -> bool {
+    block_span(text).is_some()
+}
+
+/// Extract managed block body (between markers), if well-formed.
+pub fn block_body(text: &str) -> Option<String> {
+    let (start, end) = block_span(text)?;
+    let inner_start = start + BLOCK_BEGIN.len();
+    let inner_end = end - BLOCK_END.len();
+    if inner_end < inner_start {
+        return None;
+    }
+    Some(text[inner_start..inner_end].trim_matches('\n').to_string())
+}
+
+/// Locate well-formed `[begin, end)` byte span including both markers.
+///
+/// Returns `None` when markers are absent. Callers that need to distinguish
+/// malformed pairs should use [`marker_state`].
+pub fn block_span(text: &str) -> Option<(usize, usize)> {
+    match marker_state(text) {
+        MarkerState::WellFormed { start, end } => Some((start, end)),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerState {
+    Absent,
+    WellFormed {
+        start: usize,
+        end: usize,
+    },
+    /// Begin without matching end, multiple begins/ends, or end before begin.
+    Malformed,
+}
+
+/// Analyze GrokTask marker pairs without mutating text.
+pub fn marker_state(text: &str) -> MarkerState {
+    let begin_count = text.matches(BLOCK_BEGIN).count();
+    let end_count = text.matches(BLOCK_END).count();
+    if begin_count == 0 && end_count == 0 {
+        return MarkerState::Absent;
+    }
+    if begin_count != 1 || end_count != 1 {
+        return MarkerState::Malformed;
+    }
+    let Some(start) = text.find(BLOCK_BEGIN) else {
+        return MarkerState::Malformed;
+    };
+    let Some(end_rel) = text[start + BLOCK_BEGIN.len()..].find(BLOCK_END) else {
+        return MarkerState::Malformed;
+    };
+    let end = start + BLOCK_BEGIN.len() + end_rel + BLOCK_END.len();
+    // Ensure the only end marker is this one (already enforced by count==1).
+    if text[..start].contains(BLOCK_END) {
+        return MarkerState::Malformed;
+    }
+    MarkerState::WellFormed { start, end }
+}
+
+/// Insert or replace the managed block. Preserves all content outside the block,
+/// including AskHuman managed sections. Idempotent when body already matches.
+pub fn upsert_block(text: &str, body: &str) -> Result<String, IntegrationError> {
+    let block = format_block(body);
+    match marker_state(text) {
+        MarkerState::Malformed => Err(IntegrationError::InvalidConfig(
+            "malformed GrokTask managed block markers; fix or remove begin/end pair before enabling workflow"
+                .into(),
+        )),
+        MarkerState::WellFormed { start, end } => {
+            let mut out = String::with_capacity(text.len() + block.len());
+            out.push_str(&text[..start]);
+            out.push_str(&block);
+            out.push_str(&text[end..]);
+            Ok(ensure_trailing_newline(&out))
+        }
+        MarkerState::Absent => {
+            let base = text.trim_end();
+            let out = if base.is_empty() {
+                format!("{block}\n")
+            } else {
+                format!("{base}\n\n{block}\n")
+            };
+            Ok(out)
+        }
+    }
+}
+
+/// Remove only the GrokTask managed block. Preserves user content and AskHuman blocks.
+pub fn remove_block(text: &str) -> Result<String, IntegrationError> {
+    match marker_state(text) {
+        MarkerState::Malformed => Err(IntegrationError::InvalidConfig(
+            "malformed GrokTask managed block markers; fix or remove begin/end pair before disabling workflow"
+                .into(),
+        )),
+        MarkerState::Absent => Ok(text.to_string()),
+        MarkerState::WellFormed { start, end } => {
+            let mut out = String::with_capacity(text.len());
+            out.push_str(&text[..start]);
+            out.push_str(&text[end..]);
+            Ok(tidy(&out))
+        }
+    }
+}
+
+fn format_block(body: &str) -> String {
+    let body = body.trim_matches('\n');
+    format!("{BLOCK_BEGIN}\n{body}\n{BLOCK_END}")
+}
+
+fn ensure_trailing_newline(s: &str) -> String {
+    if s.is_empty() || s.ends_with('\n') {
+        s.to_string()
+    } else {
+        format!("{s}\n")
+    }
+}
+
+/// Collapse consecutive blank lines, trim trailing whitespace, keep one final newline.
+fn tidy(s: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut prev_empty = false;
+    for line in s.split('\n') {
+        let is_empty = line.trim().is_empty();
+        if is_empty && prev_empty {
+            continue;
+        }
+        out.push(line);
+        prev_empty = is_empty;
+    }
+    let trimmed = out.join("\n").trim_end().to_string();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed}\n")
+    }
+}
+
+/// Workflow status for one agent under a workspace directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowInspection {
+    pub status: WorkflowStatus,
+    pub path: String,
+    pub detail: Option<String>,
+    pub can_write: bool,
+}
+
+/// Inspect workflow instruction status without writing.
+pub fn inspect(workspace: &Path, agent: AgentId) -> WorkflowInspection {
+    let path = instruction_path(workspace, agent);
+    let display = path.display().to_string();
+
+    if !workspace.exists() {
+        return WorkflowInspection {
+            status: WorkflowStatus::Unavailable,
+            path: display,
+            detail: Some(format!(
+                "workspace path does not exist: {}",
+                workspace.display()
+            )),
+            can_write: false,
+        };
+    }
+
+    if !path.exists() {
+        return WorkflowInspection {
+            status: WorkflowStatus::NotEnabled,
+            path: display,
+            detail: None,
+            can_write: true,
+        };
+    }
+
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            return WorkflowInspection {
+                status: WorkflowStatus::Unavailable,
+                path: display,
+                detail: Some(format!("cannot read instruction file: {e}")),
+                can_write: false,
+            };
+        }
+    };
+
+    match marker_state(&text) {
+        MarkerState::Absent => WorkflowInspection {
+            status: WorkflowStatus::NotEnabled,
+            path: display,
+            detail: None,
+            can_write: true,
+        },
+        MarkerState::Malformed => WorkflowInspection {
+            status: WorkflowStatus::InvalidFile,
+            path: display,
+            detail: Some("malformed GrokTask managed block markers (begin/end mismatch)".into()),
+            can_write: false,
+        },
+        MarkerState::WellFormed { .. } => {
+            let body = block_body(&text).unwrap_or_default();
+            if body.trim() == DEFAULT_WORKFLOW_BODY.trim() {
+                WorkflowInspection {
+                    status: WorkflowStatus::Enabled,
+                    path: display,
+                    detail: None,
+                    can_write: true,
+                }
+            } else {
+                WorkflowInspection {
+                    status: WorkflowStatus::Outdated,
+                    path: display,
+                    detail: Some("managed block body differs from current template".into()),
+                    can_write: true,
+                }
+            }
+        }
+    }
+}
+
+/// Enable (upsert) the default managed instruction block for `agent`.
+pub fn enable(workspace: &Path, agent: AgentId) -> Result<WorkflowInspection, IntegrationError> {
+    let path = instruction_path(workspace, agent);
+    if !workspace.exists() {
+        return Err(IntegrationError::Unavailable(format!(
+            "workspace path does not exist: {}",
+            workspace.display()
+        )));
+    }
+
+    let existing = if path.exists() {
+        fs::read_to_string(&path)?
+    } else {
+        String::new()
+    };
+
+    // Refuse if malformed before any write.
+    let updated = upsert_block(&existing, DEFAULT_WORKFLOW_BODY)?;
+    if updated == existing {
+        return Ok(inspect(workspace, agent));
+    }
+
+    write_instruction(&path, &updated)?;
+    Ok(inspect(workspace, agent))
+}
+
+/// Disable: remove only the GrokTask managed block.
+pub fn disable(workspace: &Path, agent: AgentId) -> Result<WorkflowInspection, IntegrationError> {
+    let path = instruction_path(workspace, agent);
+    if !path.exists() {
+        return Ok(inspect(workspace, agent));
+    }
+    let existing = fs::read_to_string(&path)?;
+    let updated = remove_block(&existing)?;
+    if updated == existing {
+        return Ok(inspect(workspace, agent));
+    }
+    write_instruction(&path, &updated)?;
+    Ok(inspect(workspace, agent))
+}
+
+fn write_instruction(path: &Path, text: &str) -> Result<(), IntegrationError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let prev_perm = if path.exists() {
+        fs::metadata(path).ok().map(|m| m.permissions())
+    } else {
+        None
+    };
+    atomic_write(path, text.as_bytes())?;
+    if let Some(perm) = prev_perm {
+        let _ = fs::set_permissions(path, perm);
+    }
+    Ok(())
+}
+
+/// True if text still contains AskHuman managed markers (used by tests).
+#[cfg(test)]
+pub fn contains_askhuman_block(text: &str) -> bool {
+    text.contains(ASKHUMAN_BEGIN) && text.contains(ASKHUMAN_END)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn create_missing_agents_md() {
+        let tmp = TempDir::new().unwrap();
+        let st = enable(tmp.path(), AgentId::Codex).unwrap();
+        assert_eq!(st.status, WorkflowStatus::Enabled);
+        let path = tmp.path().join("AGENTS.md");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains(BLOCK_BEGIN));
+        assert!(text.contains(BLOCK_END));
+        assert!(text.contains("GrokTask 协作协议"));
+        // Idempotent
+        let before = fs::read_to_string(&path).unwrap();
+        enable(tmp.path(), AgentId::Codex).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn create_missing_claude_md() {
+        let tmp = TempDir::new().unwrap();
+        let st = enable(tmp.path(), AgentId::Claude).unwrap();
+        assert_eq!(st.status, WorkflowStatus::Enabled);
+        assert!(tmp.path().join("CLAUDE.md").exists());
+    }
+
+    #[test]
+    fn append_to_existing_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        fs::write(&path, "# My project rules\n\nAlways run tests.\n").unwrap();
+        enable(tmp.path(), AgentId::Codex).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# My project rules"));
+        assert!(text.contains("Always run tests."));
+        assert!(text.contains(BLOCK_BEGIN));
+    }
+
+    #[test]
+    fn update_old_block_body() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        let old = format!("{BLOCK_BEGIN}\nold body\n{BLOCK_END}\n");
+        fs::write(&path, &old).unwrap();
+        let st = inspect(tmp.path(), AgentId::Codex);
+        assert_eq!(st.status, WorkflowStatus::Outdated);
+        enable(tmp.path(), AgentId::Codex).unwrap();
+        let st = inspect(tmp.path(), AgentId::Codex);
+        assert_eq!(st.status, WorkflowStatus::Enabled);
+        let body = block_body(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(body.trim(), DEFAULT_WORKFLOW_BODY.trim());
+    }
+
+    #[test]
+    fn disable_removes_only_groktask_block() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        let askhuman = "<!-- AskHuman:begin DO NOT EDIT (managed by AskHuman) -->\nask content\n<!-- AskHuman:end -->";
+        let content = format!(
+            "# header\n\n{askhuman}\n\n{BLOCK_BEGIN}\n{DEFAULT_WORKFLOW_BODY}{BLOCK_END}\n\nfooter\n"
+        );
+        fs::write(&path, &content).unwrap();
+        disable(tmp.path(), AgentId::Codex).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains(BLOCK_BEGIN));
+        assert!(!text.contains(BLOCK_END));
+        assert!(contains_askhuman_block(&text));
+        assert!(text.contains("# header"));
+        assert!(text.contains("footer"));
+        assert!(text.contains("ask content"));
+    }
+
+    #[test]
+    fn malformed_marker_refuses_write() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        // Begin without end
+        fs::write(&path, format!("{BLOCK_BEGIN}\nno end\n")).unwrap();
+        let before = fs::read(&path).unwrap();
+        let st = inspect(tmp.path(), AgentId::Codex);
+        assert_eq!(st.status, WorkflowStatus::InvalidFile);
+        assert!(enable(tmp.path(), AgentId::Codex).is_err());
+        assert!(disable(tmp.path(), AgentId::Codex).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        // Multiple begins
+        fs::write(
+            &path,
+            format!("{BLOCK_BEGIN}\nx\n{BLOCK_END}\n{BLOCK_BEGIN}\ny\n{BLOCK_END}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            inspect(tmp.path(), AgentId::Codex).status,
+            WorkflowStatus::InvalidFile
+        );
+        assert!(enable(tmp.path(), AgentId::Codex).is_err());
+    }
+
+    #[test]
+    fn askhuman_block_preserved_on_enable() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        let askhuman = "<!-- AskHuman:begin DO NOT EDIT (managed by AskHuman) -->\nkeep me\n<!-- AskHuman:end -->\n";
+        fs::write(&path, askhuman).unwrap();
+        enable(tmp.path(), AgentId::Codex).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(contains_askhuman_block(&text));
+        assert!(text.contains("keep me"));
+        assert!(text.contains(BLOCK_BEGIN));
+    }
+
+    #[test]
+    fn not_enabled_when_empty_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let st = inspect(tmp.path(), AgentId::Codex);
+        assert_eq!(st.status, WorkflowStatus::NotEnabled);
+        assert!(st.path.ends_with("AGENTS.md"));
+    }
+
+    #[test]
+    fn upsert_idempotent_pure() {
+        let once = upsert_block("", DEFAULT_WORKFLOW_BODY).unwrap();
+        let twice = upsert_block(&once, DEFAULT_WORKFLOW_BODY).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn remove_absent_is_identity() {
+        let text = "# only user content\n";
+        assert_eq!(remove_block(text).unwrap(), text);
+    }
+}

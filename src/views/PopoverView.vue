@@ -4,6 +4,7 @@ import ComposerPlaceholder from "@/components/composer/ComposerPlaceholder.vue";
 import ActivePlanBar from "@/components/plan/ActivePlanBar.vue";
 import TimelineView from "@/components/timeline/TimelineView.vue";
 import { fetchTaskDetail, fetchTaskList } from "@/lib/ipc";
+import { openFullWindow } from "@/lib/settings";
 import { getSharedExpansion, replaceSharedExpansionKey } from "@/lib/uiState";
 import type { ExpansionMap } from "@/lib/expansion";
 import type { TaskDetail, TaskListItem } from "@/lib/types";
@@ -53,6 +54,10 @@ function onSelectTask(id: string) {
   selectedTaskId.value = id;
 }
 
+async function onOpenFullWindow() {
+  await openFullWindow(selectedTaskId.value || undefined);
+}
+
 // Selection is the single source of truth for detail loads (no mount double-call).
 watch(selectedTaskId, (id) => {
   if (id) void loadDetail(id);
@@ -95,10 +100,12 @@ onMounted(async () => {
 
 <template>
   <section class="popover" data-testid="popover-shell">
-    <header v-if="detail" class="pop-head" data-testid="popover-header">
+    <header class="pop-head" data-testid="popover-header">
       <div class="titles">
-        <strong data-testid="popover-title">{{ detail.title }}</strong>
-        <span class="meta">
+        <strong data-testid="popover-title">
+          {{ detail?.title ?? "实时活动" }}
+        </strong>
+        <span v-if="detail" class="meta">
           <span class="mode">{{ modeLabel }}</span>
           ·
           <span>{{ detail.task.status }}</span>
@@ -106,18 +113,29 @@ onMounted(async () => {
             · {{ detail.task.actualModel }}
           </template>
         </span>
+        <span v-else class="meta">菜单栏实时面板</span>
       </div>
-      <select
-        v-if="tasks.length > 1"
-        class="task-switch"
-        data-testid="popover-task-switch"
-        :value="selectedTaskId"
-        @change="onSelectTask(($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="t in tasks" :key="t.taskId" :value="t.taskId">
-          {{ t.title }}
-        </option>
-      </select>
+      <div class="head-actions">
+        <select
+          v-if="tasks.length > 1"
+          class="task-switch"
+          data-testid="popover-task-switch"
+          :value="selectedTaskId"
+          @change="onSelectTask(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="t in tasks" :key="t.taskId" :value="t.taskId">
+            {{ t.title }}
+          </option>
+        </select>
+        <button
+          type="button"
+          class="full-btn"
+          data-testid="popover-open-full"
+          @click="onOpenFullWindow"
+        >
+          完整窗口
+        </button>
+      </div>
     </header>
 
     <p v-if="loading" class="hint">加载中…</p>
@@ -143,7 +161,7 @@ onMounted(async () => {
 
     <div v-else class="hint empty-state" data-testid="popover-empty">
       <p>暂无活动任务</p>
-      <p class="sub">打开历史或设置继续</p>
+      <p class="sub">打开完整窗口查看历史或设置</p>
     </div>
   </section>
 </template>
@@ -182,6 +200,12 @@ onMounted(async () => {
   font-weight: 600;
   color: var(--muted-fg);
 }
+.head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
 .task-switch {
   font-size: 11px;
   border: 1px solid var(--border);
@@ -189,6 +213,19 @@ onMounted(async () => {
   padding: 4px 6px;
   background: var(--bg);
   color: var(--fg);
+  flex: 1;
+  min-width: 0;
+}
+.full-btn {
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: var(--muted-bg);
+  color: var(--muted-fg);
+  cursor: pointer;
+  white-space: nowrap;
+  font-weight: 600;
 }
 .hint {
   padding: 12px;

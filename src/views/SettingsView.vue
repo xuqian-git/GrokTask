@@ -7,9 +7,13 @@ import {
   type DoctorReport,
   type SettingsSnapshot,
   type TrayMode,
+  type WorkflowStatus,
+  disableWorkflow,
+  enableWorkflow,
   fetchAgentsStatus,
   fetchDoctorReport,
   fetchSettings,
+  fetchWorkspaceCwd,
   installAgent,
   removeAgent,
   setTrayMode,
@@ -21,8 +25,10 @@ const section = ref<Section>("general");
 const settings = ref<SettingsSnapshot | null>(null);
 const agents = ref<AgentIntegrationStatus[]>([]);
 const doctor = ref<DoctorReport | null>(null);
+const workspaceCwd = ref<string>("");
 const loading = ref(true);
 const busyAgent = ref<AgentId | null>(null);
+const busyWorkflow = ref<AgentId | null>(null);
 const actionMessage = ref<string | null>(null);
 const actionOk = ref<boolean | null>(null);
 const traySaving = ref(false);
@@ -30,33 +36,50 @@ const traySaving = ref(false);
 const trayOptions: { value: TrayMode; label: string; hint: string }[] = [
   {
     value: "off",
-    label: "Off",
-    hint: "No tray icon; open via CLI or windows only. Login item removed.",
+    label: "关闭",
+    hint: "不显示菜单栏图标；仅可通过 CLI 或窗口打开。会移除登录项。",
   },
   {
     value: "active",
-    label: "When active",
-    hint: "Tray while tasks are active. No login item.",
+    label: "任务活动时",
+    hint: "应用运行时/任务活动时显示；不安装登录项。",
   },
   {
     value: "always",
-    label: "Always",
-    hint: "Tray always on; installs user login item for --gui-host.",
+    label: "始终显示",
+    hint: "始终显示托盘；安装用户登录项以启动 --gui-host。",
   },
 ];
 
-function statusLabel(s: string): string {
+function mcpStatusLabel(s: string): string {
   switch (s) {
     case "not_installed":
-      return "Not installed";
+      return "未安装";
     case "installed":
-      return "Installed";
+      return "已安装";
     case "outdated":
-      return "Outdated";
+      return "需更新";
     case "invalid_config":
-      return "Invalid config";
+      return "配置无效";
     case "unavailable":
-      return "Unavailable";
+      return "不可用";
+    default:
+      return s;
+  }
+}
+
+function workflowStatusLabel(s: WorkflowStatus | string): string {
+  switch (s) {
+    case "not_enabled":
+      return "未启用";
+    case "enabled":
+      return "已启用";
+    case "outdated":
+      return "需更新";
+    case "invalid_file":
+      return "文件异常";
+    case "unavailable":
+      return "不可用";
     default:
       return s;
   }
@@ -66,18 +89,36 @@ function agentTitle(id: AgentId): string {
   return id === "codex" ? "Codex" : "Claude Code";
 }
 
+function selectSection(next: Section) {
+  section.value = next;
+  // Keep URL query consistent so reopening / setup deep-links stay single-click.
+  const params = new URLSearchParams(window.location.search);
+  params.set("view", "settings");
+  params.set("section", next);
+  const qs = params.toString();
+  window.history.replaceState({}, "", qs ? `?${qs}` : "?");
+}
+
 async function refreshAll() {
   loading.value = true;
   actionMessage.value = null;
   actionOk.value = null;
   try {
-    const [s, a, d] = await Promise.all([
+    const [s, cwd, a, d] = await Promise.all([
       fetchSettings(),
-      fetchAgentsStatus(),
+      fetchWorkspaceCwd().catch(() => ""),
+      fetchAgentsStatus(undefined, undefined),
       fetchDoctorReport(),
     ]);
     settings.value = s;
-    agents.value = a.agents;
+    workspaceCwd.value = cwd;
+    // Re-fetch with workspace so workflow paths are accurate.
+    if (cwd) {
+      const report = await fetchAgentsStatus(undefined, cwd);
+      agents.value = report.agents;
+    } else {
+      agents.value = a.agents;
+    }
     doctor.value = d;
   } finally {
     loading.value = false;
@@ -90,7 +131,7 @@ async function onTrayModeChange(mode: TrayMode) {
   try {
     settings.value = await setTrayMode(mode);
     actionOk.value = true;
-    actionMessage.value = `Tray mode set to “${mode}”.`;
+    actionMessage.value = `托盘模式已设为「${trayOptions.find((o) => o.value === mode)?.label ?? mode}」。`;
   } catch (e) {
     actionOk.value = false;
     actionMessage.value = e instanceof Error ? e.message : String(e);
@@ -99,28 +140,37 @@ async function onTrayModeChange(mode: TrayMode) {
   }
 }
 
+function patchAgent(status: AgentIntegrationStatus) {
+  agents.value = agents.value.map((a) =>
+    a.agent === status.agent ? status : a,
+  );
+}
+
 async function onInstall(agent: AgentId) {
   const card = agents.value.find((a) => a.agent === agent);
   if (card && !card.canWrite) {
     actionOk.value = false;
     actionMessage.value =
-      card.detail ??
-      "Cannot write: config is invalid or unavailable. Fix the file manually first.";
+      card.detail ?? "无法写入：配置无效或不可用。请先手动修复配置文件。";
     return;
   }
   busyAgent.value = agent;
   actionMessage.value = null;
   try {
-    const result: ActionResult = await installAgent(agent);
+    const result: ActionResult = await installAgent(
+      agent,
+      workspaceCwd.value || undefined,
+    );
     actionOk.value = result.ok;
     actionMessage.value =
-      result.message ?? (result.ok ? "Done." : "Install failed.");
+      result.message ?? (result.ok ? "完成。" : "安装失败。");
     if (result.status) {
-      agents.value = agents.value.map((a) =>
-        a.agent === agent ? result.status! : a,
-      );
+      patchAgent(result.status);
     } else {
-      const report = await fetchAgentsStatus();
+      const report = await fetchAgentsStatus(
+        undefined,
+        workspaceCwd.value || undefined,
+      );
       agents.value = report.agents;
     }
   } catch (e) {
@@ -135,23 +185,26 @@ async function onRemove(agent: AgentId) {
   const card = agents.value.find((a) => a.agent === agent);
   if (card && !card.canRemove) {
     actionOk.value = false;
-    actionMessage.value =
-      card.detail ?? "Cannot remove: config is invalid or unavailable.";
+    actionMessage.value = card.detail ?? "无法移除：配置无效或不可用。";
     return;
   }
   busyAgent.value = agent;
   actionMessage.value = null;
   try {
-    const result: ActionResult = await removeAgent(agent);
+    const result: ActionResult = await removeAgent(
+      agent,
+      workspaceCwd.value || undefined,
+    );
     actionOk.value = result.ok;
     actionMessage.value =
-      result.message ?? (result.ok ? "Done." : "Remove failed.");
+      result.message ?? (result.ok ? "完成。" : "移除失败。");
     if (result.status) {
-      agents.value = agents.value.map((a) =>
-        a.agent === agent ? result.status! : a,
-      );
+      patchAgent(result.status);
     } else {
-      const report = await fetchAgentsStatus();
+      const report = await fetchAgentsStatus(
+        undefined,
+        workspaceCwd.value || undefined,
+      );
       agents.value = report.agents;
     }
   } catch (e) {
@@ -159,6 +212,83 @@ async function onRemove(agent: AgentId) {
     actionMessage.value = e instanceof Error ? e.message : String(e);
   } finally {
     busyAgent.value = null;
+  }
+}
+
+async function onWorkflowEnable(agent: AgentId) {
+  if (!workspaceCwd.value) {
+    actionOk.value = false;
+    actionMessage.value =
+      "无法解析工作区路径；请从项目目录运行 GrokTask setup。";
+    return;
+  }
+  const card = agents.value.find((a) => a.agent === agent);
+  if (card && !card.canWriteWorkflow) {
+    actionOk.value = false;
+    actionMessage.value = card.workflowDetail ?? "无法写入工作流指令文件。";
+    return;
+  }
+  busyWorkflow.value = agent;
+  actionMessage.value = null;
+  try {
+    const result = await enableWorkflow(agent, workspaceCwd.value || undefined);
+    actionOk.value = result.ok;
+    actionMessage.value =
+      result.message ?? (result.ok ? "已启用协作指令。" : "启用失败。");
+    if (result.status) {
+      patchAgent(result.status);
+    } else {
+      const report = await fetchAgentsStatus(
+        undefined,
+        workspaceCwd.value || undefined,
+      );
+      agents.value = report.agents;
+    }
+  } catch (e) {
+    actionOk.value = false;
+    actionMessage.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    busyWorkflow.value = null;
+  }
+}
+
+async function onWorkflowDisable(agent: AgentId) {
+  if (!workspaceCwd.value) {
+    actionOk.value = false;
+    actionMessage.value =
+      "无法解析工作区路径；请从项目目录运行 GrokTask setup。";
+    return;
+  }
+  const card = agents.value.find((a) => a.agent === agent);
+  if (card && !card.canWriteWorkflow) {
+    actionOk.value = false;
+    actionMessage.value = card.workflowDetail ?? "无法修改工作流指令文件。";
+    return;
+  }
+  busyWorkflow.value = agent;
+  actionMessage.value = null;
+  try {
+    const result = await disableWorkflow(
+      agent,
+      workspaceCwd.value || undefined,
+    );
+    actionOk.value = result.ok;
+    actionMessage.value =
+      result.message ?? (result.ok ? "已禁用协作指令。" : "禁用失败。");
+    if (result.status) {
+      patchAgent(result.status);
+    } else {
+      const report = await fetchAgentsStatus(
+        undefined,
+        workspaceCwd.value || undefined,
+      );
+      agents.value = report.agents;
+    }
+  } catch (e) {
+    actionOk.value = false;
+    actionMessage.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    busyWorkflow.value = null;
   }
 }
 
@@ -183,7 +313,8 @@ function onSettingsSectionEvent(ev: Event) {
     detail === "diagnostics" ||
     detail === "history"
   ) {
-    section.value = detail;
+    // External nav (CLI setup / tray) — update state and URL once.
+    selectSection(detail);
   }
 }
 
@@ -208,46 +339,42 @@ watch(section, () => {
 
 <template>
   <section class="settings" data-testid="settings-shell">
-    <nav
-      class="tabs"
-      aria-label="Settings sections"
-      data-testid="settings-tabs"
-    >
+    <nav class="tabs" aria-label="设置分区" data-testid="settings-tabs">
       <button
         type="button"
         data-testid="tab-general"
         :class="{ active: section === 'general' }"
-        @click="section = 'general'"
+        @click="selectSection('general')"
       >
-        General
+        通用
       </button>
       <button
         type="button"
         data-testid="tab-integrations"
         :class="{ active: section === 'integrations' }"
-        @click="section = 'integrations'"
+        @click="selectSection('integrations')"
       >
-        Integrations
+        工具开关
       </button>
       <button
         type="button"
         data-testid="tab-diagnostics"
         :class="{ active: section === 'diagnostics' }"
-        @click="section = 'diagnostics'"
+        @click="selectSection('diagnostics')"
       >
-        Diagnostics
+        诊断
       </button>
       <button
         type="button"
         data-testid="tab-history"
         :class="{ active: section === 'history' }"
-        @click="section = 'history'"
+        @click="selectSection('history')"
       >
-        History
+        历史
       </button>
     </nav>
 
-    <p v-if="loading" class="hint" data-testid="settings-loading">Loading…</p>
+    <p v-if="loading" class="hint" data-testid="settings-loading">加载中…</p>
 
     <div
       v-if="actionMessage"
@@ -266,9 +393,9 @@ watch(section, () => {
         class="panel section"
         data-testid="section-general"
       >
-        <h2>General</h2>
+        <h2>通用</h2>
         <fieldset class="field">
-          <legend>Tray / menu bar icon</legend>
+          <legend>菜单栏 / 托盘图标</legend>
           <div class="radio-list" data-testid="tray-mode-controls">
             <label
               v-for="opt in trayOptions"
@@ -293,44 +420,60 @@ watch(section, () => {
 
         <div class="meta-grid">
           <div>
-            <span class="label">Language</span>
+            <span class="label">语言</span>
             <span data-testid="language-value">{{ settings.language }}</span>
-            <span class="hint">Placeholder — full i18n later</span>
+            <span class="hint">界面默认简体中文</span>
           </div>
           <div>
-            <span class="label">Theme</span>
+            <span class="label">主题</span>
             <span data-testid="theme-value">{{ settings.theme }}</span>
-            <span class="hint">Placeholder — follows system</span>
+            <span class="hint">跟随系统</span>
           </div>
           <div>
-            <span class="label">Popover size</span>
+            <span class="label">浮层尺寸</span>
             <span data-testid="popover-size">
               {{ settings.popoverWidth }}×{{ settings.popoverHeight }}
             </span>
           </div>
           <div>
-            <span class="label">Max concurrent tasks</span>
+            <span class="label">最大并发任务</span>
             <span>{{ settings.maxConcurrentTasks }}</span>
           </div>
           <div>
-            <span class="label">Version</span>
+            <span class="label">版本</span>
             <span data-testid="app-version">{{ settings.version }}</span>
           </div>
         </div>
       </div>
 
-      <!-- Integrations -->
+      <!-- Tools / Integrations -->
       <div
         v-else-if="section === 'integrations'"
         class="panel section"
         data-testid="section-integrations"
       >
-        <h2>Agent integrations</h2>
+        <h2>工具开关</h2>
         <p class="intro">
-          Manage user-level MCP entries for Codex and Claude Code. Writes only
-          the
+          两层集成相互独立：<strong>MCP 服务</strong>只让 Agent 能调用
           <code>groktask</code>
-          server block. Restart or reload MCP in the agent after changes.
+          工具；<strong>协作指令</strong>写入项目指令文件，引导 Agent
+          在编码时主动使用 GrokTask。仅安装 MCP 不会自动启用协作指令。
+        </p>
+        <p class="workspace-line" data-testid="workspace-cwd">
+          <span class="label">当前工作区（项目指令写入位置）</span>
+          <code>{{
+            workspaceCwd || "（无法解析 / 请从项目目录运行 GrokTask setup）"
+          }}</code>
+        </p>
+        <p
+          v-if="!workspaceCwd"
+          class="hint warn"
+          data-testid="workspace-cwd-missing"
+        >
+          未选定项目工作区。请在项目目录中运行
+          <code>GrokTask setup</code>
+          后再启用/禁用协作指令；菜单栏或 Finder
+          打开时不会使用进程当前目录作为写入目标。
         </p>
 
         <article
@@ -339,76 +482,160 @@ watch(section, () => {
           class="card"
           :data-testid="`agent-card-${card.agent}`"
           :data-status="card.status"
+          :data-workflow="card.workflowStatus"
         >
           <header class="card-head">
             <h3>{{ agentTitle(card.agent) }}</h3>
-            <span
-              class="status-pill"
-              :data-status="card.status"
-              data-testid="agent-status"
-            >
-              {{ statusLabel(card.status) }}
-            </span>
           </header>
-          <dl class="card-meta">
-            <div>
-              <dt>Config path</dt>
-              <dd data-testid="agent-config-path">
-                {{ card.configPath }}
-              </dd>
+
+          <!-- MCP layer -->
+          <div class="layer" data-testid="mcp-layer">
+            <div class="layer-head">
+              <strong>MCP 服务</strong>
+              <span
+                class="status-pill"
+                :data-status="card.status"
+                data-testid="agent-status"
+              >
+                {{ mcpStatusLabel(card.status) }}
+              </span>
             </div>
-            <div>
-              <dt>Binary (will write)</dt>
-              <dd data-testid="agent-binary-path">
-                {{ card.binaryPath }}
-              </dd>
+            <dl class="card-meta">
+              <div>
+                <dt>配置文件</dt>
+                <dd data-testid="agent-config-path">
+                  {{ card.configPath }}
+                </dd>
+              </div>
+              <div>
+                <dt>将写入的二进制路径</dt>
+                <dd data-testid="agent-binary-path">
+                  {{ card.binaryPath }}
+                </dd>
+              </div>
+              <div v-if="card.detail">
+                <dt>说明</dt>
+                <dd data-testid="agent-detail">
+                  {{ card.detail }}
+                </dd>
+              </div>
+            </dl>
+            <div class="card-actions">
+              <button
+                type="button"
+                data-testid="agent-install"
+                :disabled="!card.canWrite || busyAgent === card.agent"
+                @click="onInstall(card.agent)"
+              >
+                {{
+                  card.status === "outdated"
+                    ? "更新"
+                    : card.status === "installed"
+                      ? "重新安装"
+                      : "安装"
+                }}
+              </button>
+              <button
+                type="button"
+                class="danger"
+                data-testid="agent-remove"
+                :disabled="!card.canRemove || busyAgent === card.agent"
+                @click="onRemove(card.agent)"
+              >
+                移除
+              </button>
             </div>
-            <div v-if="card.detail">
-              <dt>Detail</dt>
-              <dd data-testid="agent-detail">
-                {{ card.detail }}
-              </dd>
+            <p
+              v-if="!card.canWrite || !card.canRemove"
+              class="hint warn"
+              data-testid="agent-disabled-reason"
+            >
+              {{ card.detail || "因配置无法安全编辑，写入操作已禁用。" }}
+            </p>
+            <p class="hint reminder" data-testid="agent-reminder">
+              安装 / 更新 / 移除后，请在 Agent 中重启或重新加载 MCP。
+            </p>
+          </div>
+
+          <!-- Workflow layer -->
+          <div class="layer" data-testid="workflow-layer">
+            <div class="layer-head">
+              <strong>协作指令</strong>
+              <span
+                class="status-pill"
+                :data-status="card.workflowStatus"
+                data-testid="workflow-status"
+              >
+                {{ workflowStatusLabel(card.workflowStatus) }}
+              </span>
             </div>
-          </dl>
-          <div class="card-actions">
-            <button
-              type="button"
-              data-testid="agent-install"
-              :disabled="!card.canWrite || busyAgent === card.agent"
-              @click="onInstall(card.agent)"
+            <dl class="card-meta">
+              <div>
+                <dt>指令文件（项目级）</dt>
+                <dd data-testid="workflow-path">
+                  {{ card.workflowPath }}
+                </dd>
+              </div>
+              <div v-if="card.workflowDetail">
+                <dt>说明</dt>
+                <dd data-testid="workflow-detail">
+                  {{ card.workflowDetail }}
+                </dd>
+              </div>
+            </dl>
+            <div class="card-actions">
+              <button
+                type="button"
+                data-testid="workflow-enable"
+                :disabled="
+                  !workspaceCwd ||
+                  !card.canWriteWorkflow ||
+                  busyWorkflow === card.agent
+                "
+                @click="onWorkflowEnable(card.agent)"
+              >
+                {{
+                  card.workflowStatus === "outdated"
+                    ? "更新指令"
+                    : card.workflowStatus === "enabled"
+                      ? "重新写入"
+                      : "启用"
+                }}
+              </button>
+              <button
+                type="button"
+                class="danger"
+                data-testid="workflow-disable"
+                :disabled="
+                  !workspaceCwd ||
+                  !card.canWriteWorkflow ||
+                  busyWorkflow === card.agent
+                "
+                @click="onWorkflowDisable(card.agent)"
+              >
+                禁用
+              </button>
+            </div>
+            <p
+              v-if="!workspaceCwd || !card.canWriteWorkflow"
+              class="hint warn"
+              data-testid="workflow-disabled-reason"
             >
               {{
-                card.status === "outdated"
-                  ? "Update"
-                  : card.status === "installed"
-                    ? "Reinstall"
-                    : "Install"
+                !workspaceCwd
+                  ? "无法解析工作区路径；请从项目目录运行 GrokTask setup。"
+                  : card.workflowDetail ||
+                    "无法安全写入指令文件（标记异常或路径不可用）。"
               }}
-            </button>
-            <button
-              type="button"
-              class="danger"
-              data-testid="agent-remove"
-              :disabled="!card.canRemove || busyAgent === card.agent"
-              @click="onRemove(card.agent)"
-            >
-              Remove
-            </button>
+            </p>
+            <p class="hint reminder" data-testid="workflow-reminder">
+              仅写入托管区块（
+              <code>GrokTask:begin</code>
+              …
+              <code>end</code>
+              ），不会改动 AskHuman 或其它用户内容。全局指令注入尚未支持。
+            </p>
           </div>
-          <p
-            v-if="!card.canWrite || !card.canRemove"
-            class="hint warn"
-            data-testid="agent-disabled-reason"
-          >
-            {{
-              card.detail ||
-              "Write actions disabled because the config cannot be safely edited."
-            }}
-          </p>
-          <p class="hint reminder" data-testid="agent-reminder">
-            After Install / Update / Remove, restart the agent or reload MCP so
-            the new configuration is picked up.
-          </p>
         </article>
       </div>
 
@@ -418,7 +645,7 @@ watch(section, () => {
         class="panel section"
         data-testid="section-diagnostics"
       >
-        <h2>Diagnostics</h2>
+        <h2>诊断</h2>
         <template v-if="doctor">
           <div class="meta-grid">
             <div>
@@ -431,9 +658,9 @@ watch(section, () => {
               <span data-testid="daemon-status">{{ doctor.daemon }}</span>
             </div>
             <div>
-              <span class="label">Tray</span>
+              <span class="label">托盘</span>
               <span data-testid="tray-capability">
-                available={{ doctor.tray.trayAvailable }} · click={{
+                可用={{ doctor.tray.trayAvailable }} · 点击={{
                   doctor.tray.trayClick
                 }}
               </span>
@@ -448,7 +675,7 @@ watch(section, () => {
                 doctor.grok.executable
               }}</span>
               <span v-if="doctor.grok.version" class="hint"
-                >version {{ doctor.grok.version }}</span
+                >版本 {{ doctor.grok.version }}</span
               >
               <span v-if="doctor.grok.guidance" class="hint warn">{{
                 doctor.grok.guidance
@@ -456,37 +683,34 @@ watch(section, () => {
             </div>
           </div>
           <p class="hint">
-            GrokTask never reads or stores xAI tokens and never starts
-            interactive
-            <code>grok login</code>
-            automatically.
+            GrokTask 从不读取或存储 xAI token，也不会自动启动交互式
+            <code>grok login</code>。
           </p>
           <button
             type="button"
             data-testid="refresh-doctor"
             @click="refreshAll"
           >
-            Refresh
+            刷新
           </button>
         </template>
       </div>
 
-      <!-- History -->
+      <!-- History settings -->
       <div v-else class="panel section" data-testid="section-history">
-        <h2>History</h2>
+        <h2>历史保留</h2>
         <div class="meta-grid">
           <div>
-            <span class="label">History limit</span>
+            <span class="label">历史条数上限</span>
             <span data-testid="history-limit">{{ settings.historyLimit }}</span>
-            <span class="hint">Tasks retained in local SQLite history</span>
+            <span class="hint">本地 SQLite 保留的任务数</span>
           </div>
         </div>
         <p class="hint">
-          Clear-history actions will land when storage retention APIs are
-          exposed safely. No destructive clear is offered in this build.
+          清空历史将在存储清理 API 安全暴露后提供。当前版本不提供破坏性清空。
         </p>
         <button type="button" disabled data-testid="clear-history-disabled">
-          Clear history (unavailable)
+          清空历史（暂不可用）
         </button>
       </div>
     </template>
@@ -528,10 +752,25 @@ watch(section, () => {
   font-size: 15px;
 }
 .intro {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   font-size: 13px;
   color: var(--subtle);
   line-height: 1.45;
+}
+.workspace-line {
+  margin: 0 0 16px;
+  font-size: 12px;
+}
+.workspace-line .label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--subtle);
+  margin-bottom: 4px;
+}
+.workspace-line code {
+  word-break: break-all;
 }
 .field {
   border: 1px solid var(--border);
@@ -597,11 +836,27 @@ watch(section, () => {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 }
 .card-head h3 {
   margin: 0;
   font-size: 14px;
+}
+.layer {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 4px;
+}
+.layer:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+.layer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
 }
 .status-pill {
   font-size: 11px;
@@ -611,11 +866,13 @@ watch(section, () => {
   color: var(--muted-fg);
 }
 .status-pill[data-status="invalid_config"],
+.status-pill[data-status="invalid_file"],
 .status-pill[data-status="unavailable"] {
   background: #fef2f2;
   color: var(--danger);
 }
-.status-pill[data-status="installed"] {
+.status-pill[data-status="installed"],
+.status-pill[data-status="enabled"] {
   background: #ecfdf5;
   color: var(--success);
 }

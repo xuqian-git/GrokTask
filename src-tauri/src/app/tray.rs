@@ -60,21 +60,21 @@ pub mod menu_id {
 /// Build the ordered tray menu model from live summary inputs.
 pub fn build_tray_menu(input: &TrayMenuInput) -> Vec<TrayMenuEntry> {
     let summary = if input.running_count == 0 {
-        "GrokTask · idle".to_string()
+        "GrokTask · 空闲".to_string()
     } else if input.running_count == 1 {
-        "GrokTask · 1 task running".to_string()
+        "GrokTask · 1 个任务运行中".to_string()
     } else {
-        format!("GrokTask · {} tasks running", input.running_count)
+        format!("GrokTask · {} 个任务运行中", input.running_count)
     };
 
     let current = input
         .current_summary
         .clone()
-        .unwrap_or_else(|| "Current: (none)".into());
-    let current_text = if current.starts_with("Current:") {
+        .unwrap_or_else(|| "当前：（无）".into());
+    let current_text = if current.starts_with("当前：") || current.starts_with("Current:") {
         current
     } else {
-        format!("Current: {current}")
+        format!("当前：{current}")
     };
 
     let mut items = vec![
@@ -93,27 +93,27 @@ pub fn build_tray_menu(input: &TrayMenuInput) -> Vec<TrayMenuEntry> {
         },
         TrayMenuEntry::Action {
             id: menu_id::OPEN_CURRENT.into(),
-            text: "Open current task".into(),
+            text: "打开当前任务".into(),
             enabled: input.has_current_task,
         },
         TrayMenuEntry::Action {
             id: menu_id::OPEN_APP.into(),
-            text: "Open GrokTask".into(),
+            text: "打开完整窗口".into(),
             enabled: true,
         },
         TrayMenuEntry::Action {
             id: menu_id::OPEN_POPOVER.into(),
-            text: "Open popover".into(),
+            text: "打开实时面板".into(),
             enabled: true,
         },
         TrayMenuEntry::Action {
             id: menu_id::HISTORY.into(),
-            text: "History".into(),
+            text: "ACP 记录".into(),
             enabled: true,
         },
         TrayMenuEntry::Action {
             id: menu_id::SETTINGS.into(),
-            text: "Settings".into(),
+            text: "设置".into(),
             enabled: true,
         },
         TrayMenuEntry::Separator {
@@ -121,7 +121,7 @@ pub fn build_tray_menu(input: &TrayMenuInput) -> Vec<TrayMenuEntry> {
         },
         TrayMenuEntry::Status {
             id: menu_id::DAEMON_STATUS.into(),
-            text: format!("Daemon: {}", input.daemon_status),
+            text: format!("Daemon：{}", input.daemon_status),
             enabled: false,
         },
     ];
@@ -129,7 +129,7 @@ pub fn build_tray_menu(input: &TrayMenuInput) -> Vec<TrayMenuEntry> {
     if input.can_restart_daemon {
         items.push(TrayMenuEntry::Action {
             id: menu_id::RESTART_DAEMON.into(),
-            text: "Restart Daemon".into(),
+            text: "重启 Daemon".into(),
             enabled: true,
         });
     }
@@ -139,7 +139,7 @@ pub fn build_tray_menu(input: &TrayMenuInput) -> Vec<TrayMenuEntry> {
     });
     items.push(TrayMenuEntry::Action {
         id: menu_id::QUIT.into(),
-        text: "Quit GrokTask".into(),
+        text: "退出 GrokTask".into(),
         enabled: true,
     });
 
@@ -269,7 +269,7 @@ mod tests {
             TrayMenuEntry::Status { id, text, .. } if id == menu_id::SUMMARY => Some(text.clone()),
             _ => None,
         });
-        assert_eq!(summary.as_deref(), Some("GrokTask · 2 tasks running"));
+        assert_eq!(summary.as_deref(), Some("GrokTask · 2 个任务运行中"));
     }
 
     #[test]

@@ -43,8 +43,9 @@ pub enum ThemePref {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TrayMode {
-    #[default]
     Off,
+    /// Show tray while the app/gui host is running; does not install a login item.
+    #[default]
     Active,
     Always,
 }
@@ -67,7 +68,7 @@ impl Default for GeneralConfig {
         Self {
             language: LanguagePref::System,
             theme: ThemePref::System,
-            tray_mode: TrayMode::Off,
+            tray_mode: TrayMode::Active,
             history_limit: 200,
             max_concurrent_tasks: 3,
             task_timeout_seconds: 14_400,
@@ -431,7 +432,7 @@ mod tests {
         let path = tmp.path().join("missing.json");
         let doc = ConfigDocument::load_from(&path).unwrap();
         assert_eq!(doc.config.general.history_limit, 200);
-        assert_eq!(doc.config.general.tray_mode, TrayMode::Off);
+        assert_eq!(doc.config.general.tray_mode, TrayMode::Active);
     }
 
     #[test]

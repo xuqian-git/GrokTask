@@ -5,7 +5,7 @@
 
 use super::types::{
     AgentId, AgentIntegrationStatus, IntegrationError, IntegrationStatus, McpEntryTemplate,
-    SERVER_NAME,
+    WorkflowStatus, SERVER_NAME,
 };
 use crate::config::atomic_write;
 use std::fs;
@@ -38,111 +38,102 @@ impl CodexIntegration {
 
         // Parent dir missing is not an error — treat as not installed.
         if !path.exists() {
-            return AgentIntegrationStatus {
-                agent: AgentId::Codex,
-                status: IntegrationStatus::NotInstalled,
-                config_path: display,
-                binary_path: binary,
-                detail: None,
-                can_write: true,
-                can_remove: true,
-            };
+            return mcp_status(
+                IntegrationStatus::NotInstalled,
+                display,
+                binary,
+                None,
+                true,
+                true,
+            );
         }
 
         let text = match fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) => {
-                return AgentIntegrationStatus {
-                    agent: AgentId::Codex,
-                    status: IntegrationStatus::Unavailable,
-                    config_path: display,
-                    binary_path: binary,
-                    detail: Some(format!("cannot read config: {e}")),
-                    can_write: false,
-                    can_remove: false,
-                };
+                return mcp_status(
+                    IntegrationStatus::Unavailable,
+                    display,
+                    binary,
+                    Some(format!("cannot read config: {e}")),
+                    false,
+                    false,
+                );
             }
         };
 
         if text.trim().is_empty() {
-            return AgentIntegrationStatus {
-                agent: AgentId::Codex,
-                status: IntegrationStatus::NotInstalled,
-                config_path: display,
-                binary_path: binary,
-                detail: None,
-                can_write: true,
-                can_remove: true,
-            };
+            return mcp_status(
+                IntegrationStatus::NotInstalled,
+                display,
+                binary,
+                None,
+                true,
+                true,
+            );
         }
 
         let doc = match text.parse::<DocumentMut>() {
             Ok(d) => d,
             Err(e) => {
-                return AgentIntegrationStatus {
-                    agent: AgentId::Codex,
-                    status: IntegrationStatus::InvalidConfig,
-                    config_path: display,
-                    binary_path: binary,
-                    detail: Some(format!("invalid TOML: {e}")),
-                    can_write: false,
-                    can_remove: false,
-                };
+                return mcp_status(
+                    IntegrationStatus::InvalidConfig,
+                    display,
+                    binary,
+                    Some(format!("invalid TOML: {e}")),
+                    false,
+                    false,
+                );
             }
         };
 
         // Parent type wrong → invalid
         if let Some(servers) = doc.get("mcp_servers") {
             if !servers.is_table_like() {
-                return AgentIntegrationStatus {
-                    agent: AgentId::Codex,
-                    status: IntegrationStatus::InvalidConfig,
-                    config_path: display,
-                    binary_path: binary,
-                    detail: Some("`mcp_servers` is not a table".into()),
-                    can_write: false,
-                    can_remove: false,
-                };
+                return mcp_status(
+                    IntegrationStatus::InvalidConfig,
+                    display,
+                    binary,
+                    Some("`mcp_servers` is not a table".into()),
+                    false,
+                    false,
+                );
             }
         }
 
         match entry_status(&doc, template) {
-            EntryState::Absent => AgentIntegrationStatus {
-                agent: AgentId::Codex,
-                status: IntegrationStatus::NotInstalled,
-                config_path: display,
-                binary_path: binary,
-                detail: None,
-                can_write: true,
-                can_remove: true,
-            },
-            EntryState::Matches => AgentIntegrationStatus {
-                agent: AgentId::Codex,
-                status: IntegrationStatus::Installed,
-                config_path: display,
-                binary_path: binary,
-                detail: None,
-                can_write: true,
-                can_remove: true,
-            },
-            EntryState::Mismatch => AgentIntegrationStatus {
-                agent: AgentId::Codex,
-                status: IntegrationStatus::Outdated,
-                config_path: display,
-                binary_path: binary,
-                detail: Some("command, args, or timeouts differ from template".into()),
-                can_write: true,
-                can_remove: true,
-            },
-            EntryState::InvalidParent => AgentIntegrationStatus {
-                agent: AgentId::Codex,
-                status: IntegrationStatus::InvalidConfig,
-                config_path: display,
-                binary_path: binary,
-                detail: Some("`mcp_servers.groktask` is not a table".into()),
-                can_write: false,
-                can_remove: false,
-            },
+            EntryState::Absent => mcp_status(
+                IntegrationStatus::NotInstalled,
+                display,
+                binary,
+                None,
+                true,
+                true,
+            ),
+            EntryState::Matches => mcp_status(
+                IntegrationStatus::Installed,
+                display,
+                binary,
+                None,
+                true,
+                true,
+            ),
+            EntryState::Mismatch => mcp_status(
+                IntegrationStatus::Outdated,
+                display,
+                binary,
+                Some("command, args, or timeouts differ from template".into()),
+                true,
+                true,
+            ),
+            EntryState::InvalidParent => mcp_status(
+                IntegrationStatus::InvalidConfig,
+                display,
+                binary,
+                Some("`mcp_servers.groktask` is not a table".into()),
+                false,
+                false,
+            ),
         }
     }
 
@@ -290,6 +281,30 @@ fn apply_uninstall_toml(text: &str) -> Result<String, IntegrationError> {
         }
     }
     Ok(doc.to_string())
+}
+
+/// Build MCP-only status; workflow fields are filled by `integrations::status_report`.
+fn mcp_status(
+    status: IntegrationStatus,
+    config_path: String,
+    binary_path: String,
+    detail: Option<String>,
+    can_write: bool,
+    can_remove: bool,
+) -> AgentIntegrationStatus {
+    AgentIntegrationStatus {
+        agent: AgentId::Codex,
+        status,
+        config_path,
+        binary_path,
+        detail,
+        can_write,
+        can_remove,
+        workflow_status: WorkflowStatus::NotEnabled,
+        workflow_path: String::new(),
+        workflow_detail: None,
+        can_write_workflow: true,
+    }
 }
 
 fn write_config(path: &Path, text: &str) -> Result<(), IntegrationError> {

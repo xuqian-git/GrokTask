@@ -855,15 +855,24 @@ fn cmd_app(args: &[String]) -> i32 {
     }
 }
 
+/// Build the navigation command for `GrokTask setup` (Settings → 工具开关).
+/// Carries the caller's project cwd so the GUI can write workflow instructions
+/// there; never falls back to the GUI process cwd.
+fn setup_nav_command(cwd: Option<std::path::PathBuf>) -> crate::ipc::protocol::GuiNavCommand {
+    crate::ipc::protocol::GuiNavCommand::OpenSettings {
+        section: Some("integrations".into()),
+        cwd: cwd.map(|p| p.display().to_string()),
+    }
+}
+
 /// Open Settings > Integrations. Does not write any Agent or GrokTask config.
 fn cmd_setup(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--write" || a == "--install") {
         eprint_line("error: setup never writes config; use `agents mode …` or Settings UI");
         return 1;
     }
-    let cmd = crate::ipc::protocol::GuiNavCommand::OpenSettings {
-        section: Some("integrations".into()),
-    };
+    let cwd = std::env::current_dir().ok();
+    let cmd = setup_nav_command(cwd);
     match crate::app::gui_host::ensure_and_navigate(cmd) {
         Ok(()) => {
             print_line("opened Settings → Integrations (no config changes)");
@@ -879,22 +888,23 @@ fn cmd_setup(args: &[String]) -> i32 {
 fn cmd_agents(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint_line(
-            "error: usage: agents status [codex|claude] | agents mode codex|claude mcp|none",
+            "error: usage: agents status [codex|claude] [--cwd PATH] | agents mode codex|claude mcp|none | agents workflow status|enable|disable …",
         );
         return 1;
     }
     let json_out = args.iter().any(|a| a == "--json");
     match args[0].as_str() {
         "status" => {
+            let cwd = parse_cwd_flag(args);
             let filter = args.get(1).and_then(|s| {
-                if s == "--json" {
+                if s == "--json" || s == "--cwd" {
                     None
                 } else {
                     crate::integrations::AgentId::parse(s)
                 }
             });
             if let Some(s) = args.get(1) {
-                if s != "--json" && filter.is_none() {
+                if s != "--json" && s != "--cwd" && filter.is_none() {
                     eprint_line(&format!(
                         "error: unknown agent `{s}`; expected codex|claude"
                     ));
@@ -905,20 +915,33 @@ fn cmd_agents(args: &[String]) -> i32 {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "GrokTask".into());
             let roots = integration_roots_for_cli();
-            let report = crate::integrations::status_report(&roots, filter, &command);
+            let workspace = match crate::integrations::resolve_workspace(cwd.as_deref()) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprint_line(&format!("warning: workspace unavailable: {e}"));
+                    None
+                }
+            };
+            let report =
+                crate::integrations::status_report(&roots, filter, &command, workspace.as_deref());
             if json_out {
                 print_line(&serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
             } else {
                 for a in &report.agents {
                     print_line(&format!(
-                        "{}: status={} config={} binary={}",
+                        "{}: mcp={} workflow={} config={} workflow_file={} binary={}",
                         a.agent.as_str(),
                         a.status.as_str(),
+                        a.workflow_status.as_str(),
                         a.config_path,
+                        a.workflow_path,
                         a.binary_path
                     ));
                     if let Some(d) = &a.detail {
-                        print_line(&format!("  detail: {d}"));
+                        print_line(&format!("  mcp_detail: {d}"));
+                    }
+                    if let Some(d) = &a.workflow_detail {
+                        print_line(&format!("  workflow_detail: {d}"));
                     }
                 }
             }
@@ -984,11 +1007,165 @@ fn cmd_agents(args: &[String]) -> i32 {
                 }
             }
         }
+        "workflow" => cmd_agents_workflow(&args[1..], json_out),
         other => {
             eprint_line(&format!("error: unknown agents subcommand `{other}`"));
             1
         }
     }
+}
+
+/// `agents workflow status|enable|disable [agent] [--cwd PATH]`
+fn cmd_agents_workflow(args: &[String], json_out: bool) -> i32 {
+    if args.is_empty() {
+        eprint_line(
+            "error: usage: agents workflow status [codex|claude] [--cwd PATH] | agents workflow enable|disable codex|claude [--cwd PATH]",
+        );
+        return 1;
+    }
+    let action = args[0].as_str();
+    let cwd = parse_cwd_flag(args);
+    let workspace = match crate::integrations::resolve_workspace(cwd.as_deref()) {
+        Ok(p) => p,
+        Err(e) => {
+            eprint_line(&format!("error: {e}"));
+            return 1;
+        }
+    };
+
+    match action {
+        "status" => {
+            let filter = args.get(1).and_then(|s| {
+                if s == "--json" || s == "--cwd" {
+                    None
+                } else {
+                    crate::integrations::AgentId::parse(s)
+                }
+            });
+            if let Some(s) = args.get(1) {
+                if s != "--json" && s != "--cwd" && filter.is_none() {
+                    eprint_line(&format!(
+                        "error: unknown agent `{s}`; expected codex|claude"
+                    ));
+                    return 1;
+                }
+            }
+            let agents: Vec<crate::integrations::AgentId> = match filter {
+                Some(a) => vec![a],
+                None => vec![
+                    crate::integrations::AgentId::Codex,
+                    crate::integrations::AgentId::Claude,
+                ],
+            };
+            let mut rows = Vec::new();
+            for agent in agents {
+                let st = crate::integrations::workflow_status(&workspace, agent);
+                if json_out {
+                    rows.push(serde_json::json!({
+                        "agent": agent.as_str(),
+                        "workflowStatus": st.status.as_str(),
+                        "workflowPath": st.path,
+                        "detail": st.detail,
+                        "canWrite": st.can_write,
+                    }));
+                } else {
+                    print_line(&format!(
+                        "{}: workflow={} path={}",
+                        agent.as_str(),
+                        st.status.as_str(),
+                        st.path
+                    ));
+                    if let Some(d) = &st.detail {
+                        print_line(&format!("  detail: {d}"));
+                    }
+                }
+            }
+            if json_out {
+                print_line(
+                    &serde_json::to_string(&serde_json::json!({ "agents": rows }))
+                        .unwrap_or_else(|_| "{}".into()),
+                );
+            }
+            0
+        }
+        "enable" | "disable" => {
+            let agent_s = match args.get(1).map(|s| s.as_str()) {
+                Some(s) if s != "--cwd" && s != "--json" => s,
+                _ => {
+                    eprint_line(&format!(
+                        "error: usage: agents workflow {action} codex|claude [--cwd PATH]"
+                    ));
+                    return 1;
+                }
+            };
+            let agent = match crate::integrations::AgentId::parse(agent_s) {
+                Some(a) => a,
+                None => {
+                    eprint_line(&format!("error: unknown agent `{agent_s}`"));
+                    return 1;
+                }
+            };
+            let result = if action == "enable" {
+                crate::integrations::workflow_enable(&workspace, agent)
+            } else {
+                crate::integrations::workflow_disable(&workspace, agent)
+            };
+            match result {
+                Ok(st) => {
+                    if json_out {
+                        print_line(
+                            &serde_json::to_string(&serde_json::json!({
+                                "agent": agent.as_str(),
+                                "workflowStatus": st.status.as_str(),
+                                "workflowPath": st.path,
+                                "detail": st.detail,
+                            }))
+                            .unwrap_or_else(|_| "{}".into()),
+                        );
+                    } else {
+                        print_line(&format!(
+                            "{} workflow {} → {}",
+                            agent.as_str(),
+                            action,
+                            st.status.as_str()
+                        ));
+                        print_line(&format!("path={}", st.path));
+                        if action == "enable" {
+                            print_line(
+                                "note: host agent reads project instruction files on next session; restart agent if needed",
+                            );
+                        }
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprint_line(&format!("error: {e}"));
+                    1
+                }
+            }
+        }
+        other => {
+            eprint_line(&format!(
+                "error: unknown workflow subcommand `{other}`; expected status|enable|disable"
+            ));
+            1
+        }
+    }
+}
+
+/// Parse `--cwd PATH` from argv fragment. Does not consume agent names.
+fn parse_cwd_flag(args: &[String]) -> Option<std::path::PathBuf> {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--cwd" {
+            return args.get(i + 1).map(std::path::PathBuf::from);
+        }
+        if let Some(rest) = args[i].strip_prefix("--cwd=") {
+            return Some(std::path::PathBuf::from(rest));
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Integration roots for CLI. Honors `GROKTASK_AGENT_HOME` so tests never touch real ~/.codex.
@@ -1085,7 +1262,7 @@ mod tests {
         let prev = std::env::var_os("GROKTASK_AGENT_HOME");
         std::env::set_var("GROKTASK_AGENT_HOME", tmp.path());
         let roots = integration_roots_for_cli();
-        let report = crate::integrations::status_report(&roots, None, "/tmp/GrokTask");
+        let report = crate::integrations::status_report(&roots, None, "/tmp/GrokTask", None);
         assert_eq!(report.agents.len(), 2);
         assert_eq!(
             report.agents[0].status,
@@ -1135,13 +1312,69 @@ mod tests {
         std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
         std::fs::write(&codex, b"# untouched\n").unwrap();
         let before = std::fs::read(&codex).unwrap();
-        let cmd = crate::ipc::protocol::GuiNavCommand::OpenSettings {
-            section: Some("integrations".into()),
-        };
+        let project = tmp.path().join("my-project");
+        std::fs::create_dir_all(&project).unwrap();
+        let cmd = super::setup_nav_command(Some(project.clone()));
         assert!(matches!(
             cmd,
             crate::ipc::protocol::GuiNavCommand::OpenSettings { .. }
         ));
+        match &cmd {
+            crate::ipc::protocol::GuiNavCommand::OpenSettings { section, cwd } => {
+                assert_eq!(section.as_deref(), Some("integrations"));
+                let expected = project.display().to_string();
+                assert_eq!(cwd.as_deref(), Some(expected.as_str()));
+            }
+            _ => panic!("expected OpenSettings"),
+        }
         assert_eq!(std::fs::read(&codex).unwrap(), before);
+    }
+
+    #[test]
+    fn setup_nav_includes_project_cwd() {
+        let project = std::path::PathBuf::from("/Users/dev/my-app");
+        let cmd = super::setup_nav_command(Some(project));
+        let v = serde_json::to_value(&cmd).unwrap();
+        assert_eq!(v["method"], "gui.open_settings");
+        assert_eq!(v["section"], "integrations");
+        assert_eq!(v["cwd"], "/Users/dev/my-app");
+    }
+
+    #[test]
+    fn agents_workflow_enable_disable_temp_cwd() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path();
+        // Must not touch real user config; only temp workspace files.
+        let st =
+            crate::integrations::workflow_enable(ws, crate::integrations::AgentId::Codex).unwrap();
+        assert_eq!(st.status, crate::integrations::WorkflowStatus::Enabled);
+        assert!(ws.join("AGENTS.md").exists());
+        let st =
+            crate::integrations::workflow_disable(ws, crate::integrations::AgentId::Codex).unwrap();
+        assert_eq!(st.status, crate::integrations::WorkflowStatus::NotEnabled);
+        // Claude path
+        let st =
+            crate::integrations::workflow_enable(ws, crate::integrations::AgentId::Claude).unwrap();
+        assert_eq!(st.status, crate::integrations::WorkflowStatus::Enabled);
+        assert!(ws.join("CLAUDE.md").exists());
+    }
+
+    #[test]
+    fn parse_cwd_flag_reads_path() {
+        let args = vec![
+            "status".into(),
+            "codex".into(),
+            "--cwd".into(),
+            "/tmp/demo".into(),
+        ];
+        assert_eq!(
+            parse_cwd_flag(&args),
+            Some(std::path::PathBuf::from("/tmp/demo"))
+        );
+        let args2 = vec!["status".into(), "--cwd=/tmp/x".into()];
+        assert_eq!(
+            parse_cwd_flag(&args2),
+            Some(std::path::PathBuf::from("/tmp/x"))
+        );
     }
 }

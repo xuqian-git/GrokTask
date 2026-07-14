@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import PopoverView from "./views/PopoverView.vue";
 import TaskView from "./views/TaskView.vue";
 import HistoryView from "./views/HistoryView.vue";
@@ -8,23 +8,25 @@ import SettingsView from "./views/SettingsView.vue";
 type Surface = "popover" | "task" | "history" | "settings";
 
 const surface = ref<Surface>("task");
+/** Optional task id when navigating from history / external open. */
+const routeTaskId = ref<string | undefined>(undefined);
 
 const title = computed(() => {
   switch (surface.value) {
     case "popover":
       return "GrokTask";
     case "history":
-      return "History";
+      return "ACP 记录";
     case "settings":
-      return "Settings";
+      return "设置";
     default:
-      return "Task";
+      return "任务";
   }
 });
 
 const showChrome = computed(() => surface.value !== "popover");
 
-onMounted(() => {
+function applyRouteFromLocation() {
   const params = new URLSearchParams(window.location.search);
   const view = params.get("view");
   if (
@@ -35,48 +37,97 @@ onMounted(() => {
   ) {
     surface.value = view;
   }
+  const task = params.get("task");
+  routeTaskId.value = task && task.length > 0 ? task : undefined;
+}
+
+function setSurface(next: Surface, opts?: { taskId?: string }) {
+  surface.value = next;
+  if (opts?.taskId !== undefined) {
+    routeTaskId.value = opts.taskId || undefined;
+  }
+  // Keep URL in sync so shell and settings tabs stay single-click consistent.
+  const params = new URLSearchParams(window.location.search);
+  params.set("view", next);
+  if (next !== "settings") {
+    params.delete("section");
+  }
+  if (opts?.taskId) {
+    params.set("task", opts.taskId);
+  } else if (next !== "task") {
+    params.delete("task");
+  }
+  const qs = params.toString();
+  window.history.replaceState({}, "", qs ? `?${qs}` : "?");
+}
+
+function onNavigate(ev: Event) {
+  const detail = (ev as CustomEvent<{ view?: string; taskId?: string }>).detail;
+  if (!detail?.view) return;
+  if (
+    detail.view === "popover" ||
+    detail.view === "task" ||
+    detail.view === "history" ||
+    detail.view === "settings"
+  ) {
+    setSurface(detail.view, { taskId: detail.taskId });
+  }
+}
+
+function onOpenTask(ev: Event) {
+  const detail = (ev as CustomEvent<{ taskId?: string }>).detail;
+  if (detail?.taskId) {
+    setSurface("task", { taskId: detail.taskId });
+  }
+}
+
+onMounted(() => {
+  applyRouteFromLocation();
+  window.addEventListener("groktask-navigate", onNavigate);
+  window.addEventListener("groktask-open-task", onOpenTask);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("groktask-navigate", onNavigate);
+  window.removeEventListener("groktask-open-task", onOpenTask);
 });
 </script>
 
 <template>
-  <div class="app-shell" :data-surface="surface">
-    <header v-if="showChrome" class="app-header">
+  <div class="app-shell" :data-surface="surface" data-testid="app-shell">
+    <header v-if="showChrome" class="app-header" data-testid="app-header">
       <h1>{{ title }}</h1>
-      <span class="badge">Phase 5</span>
-      <nav class="nav" aria-label="Surfaces">
+      <span class="badge">本地工具</span>
+      <nav class="nav" aria-label="主导航" data-testid="app-nav">
         <button
           type="button"
+          data-testid="nav-task"
           :class="{ active: surface === 'task' }"
-          @click="surface = 'task'"
+          @click="setSurface('task')"
         >
-          Task
+          任务
         </button>
         <button
           type="button"
+          data-testid="nav-history"
           :class="{ active: surface === 'history' }"
-          @click="surface = 'history'"
+          @click="setSurface('history')"
         >
-          History
+          ACP 记录
         </button>
         <button
           type="button"
+          data-testid="nav-settings"
           :class="{ active: surface === 'settings' }"
-          @click="surface = 'settings'"
+          @click="setSurface('settings')"
         >
-          Settings
-        </button>
-        <button
-          type="button"
-          :class="{ active: surface === 'popover' }"
-          @click="surface = 'popover'"
-        >
-          Popover
+          设置
         </button>
       </nav>
     </header>
     <main class="app-main">
       <PopoverView v-if="surface === 'popover'" />
-      <TaskView v-else-if="surface === 'task'" />
+      <TaskView v-else-if="surface === 'task'" :initial-task-id="routeTaskId" />
       <HistoryView v-else-if="surface === 'history'" />
       <SettingsView v-else />
     </main>

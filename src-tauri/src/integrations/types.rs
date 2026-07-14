@@ -52,6 +52,29 @@ impl IntegrationStatus {
     }
 }
 
+/// Project-level workflow instruction injection status (AGENTS.md / CLAUDE.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowStatus {
+    NotEnabled,
+    Enabled,
+    Outdated,
+    InvalidFile,
+    Unavailable,
+}
+
+impl WorkflowStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WorkflowStatus::NotEnabled => "not_enabled",
+            WorkflowStatus::Enabled => "enabled",
+            WorkflowStatus::Outdated => "outdated",
+            WorkflowStatus::InvalidFile => "invalid_file",
+            WorkflowStatus::Unavailable => "unavailable",
+        }
+    }
+}
+
 /// Desired MCP entry values for install/update comparison.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpEntryTemplate {
@@ -66,15 +89,35 @@ pub struct McpEntryTemplate {
 #[serde(rename_all = "camelCase")]
 pub struct AgentIntegrationStatus {
     pub agent: AgentId,
+    /// MCP server install status (legacy field name kept for compatibility).
     pub status: IntegrationStatus,
     pub config_path: String,
     pub binary_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// True when Install/Update may safely write.
+    /// True when Install/Update may safely write MCP config.
     pub can_write: bool,
     /// True when Remove may safely write (entry may or may not exist).
     pub can_remove: bool,
+    /// Workflow instruction injection status (project AGENTS.md / CLAUDE.md).
+    #[serde(default = "default_workflow_status")]
+    pub workflow_status: WorkflowStatus,
+    /// Absolute path of the project instruction file for workflow injection.
+    #[serde(default)]
+    pub workflow_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_detail: Option<String>,
+    /// True when enable/update workflow instruction may safely write.
+    #[serde(default = "default_true")]
+    pub can_write_workflow: bool,
+}
+
+fn default_workflow_status() -> WorkflowStatus {
+    WorkflowStatus::NotEnabled
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

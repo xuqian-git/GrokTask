@@ -42,7 +42,7 @@ Windows endpoint 使用 named pipe，不创建 `.sock`：
   "general": {
     "language": "system",
     "theme": "system",
-    "trayMode": "off",
+    "trayMode": "active",
     "historyLimit": 200,
     "maxConcurrentTasks": 3,
     "taskTimeoutSeconds": 14400,

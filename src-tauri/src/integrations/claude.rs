@@ -6,7 +6,7 @@
 
 use super::types::{
     AgentId, AgentIntegrationStatus, IntegrationError, IntegrationStatus, McpEntryTemplate,
-    SERVER_NAME,
+    WorkflowStatus, SERVER_NAME,
 };
 use crate::config::atomic_write;
 use serde_json::{json, Map, Value};
@@ -38,113 +38,104 @@ impl ClaudeIntegration {
         let binary = template.command.clone();
 
         if !path.exists() {
-            return AgentIntegrationStatus {
-                agent: AgentId::Claude,
-                status: IntegrationStatus::NotInstalled,
-                config_path: display,
-                binary_path: binary,
-                detail: None,
-                can_write: true,
-                can_remove: true,
-            };
+            return mcp_status(
+                IntegrationStatus::NotInstalled,
+                display,
+                binary,
+                None,
+                true,
+                true,
+            );
         }
 
         let text = match fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) => {
-                return AgentIntegrationStatus {
-                    agent: AgentId::Claude,
-                    status: IntegrationStatus::Unavailable,
-                    config_path: display,
-                    binary_path: binary,
-                    detail: Some(format!("cannot read config: {e}")),
-                    can_write: false,
-                    can_remove: false,
-                };
+                return mcp_status(
+                    IntegrationStatus::Unavailable,
+                    display,
+                    binary,
+                    Some(format!("cannot read config: {e}")),
+                    false,
+                    false,
+                );
             }
         };
 
         if text.trim().is_empty() {
-            return AgentIntegrationStatus {
-                agent: AgentId::Claude,
-                status: IntegrationStatus::NotInstalled,
-                config_path: display,
-                binary_path: binary,
-                detail: None,
-                can_write: true,
-                can_remove: true,
-            };
+            return mcp_status(
+                IntegrationStatus::NotInstalled,
+                display,
+                binary,
+                None,
+                true,
+                true,
+            );
         }
 
         let value = match serde_json::from_str::<Value>(&text) {
             Ok(v) => v,
             Err(e) => {
-                return AgentIntegrationStatus {
-                    agent: AgentId::Claude,
-                    status: IntegrationStatus::InvalidConfig,
-                    config_path: display,
-                    binary_path: binary,
-                    detail: Some(format!("invalid JSON: {e}")),
-                    can_write: false,
-                    can_remove: false,
-                };
+                return mcp_status(
+                    IntegrationStatus::InvalidConfig,
+                    display,
+                    binary,
+                    Some(format!("invalid JSON: {e}")),
+                    false,
+                    false,
+                );
             }
         };
 
         let Some(root) = value.as_object() else {
-            return AgentIntegrationStatus {
-                agent: AgentId::Claude,
-                status: IntegrationStatus::InvalidConfig,
-                config_path: display,
-                binary_path: binary,
-                detail: Some("root is not a JSON object".into()),
-                can_write: false,
-                can_remove: false,
-            };
+            return mcp_status(
+                IntegrationStatus::InvalidConfig,
+                display,
+                binary,
+                Some("root is not a JSON object".into()),
+                false,
+                false,
+            );
         };
 
         if let Some(servers) = root.get("mcpServers") {
             if !servers.is_object() {
-                return AgentIntegrationStatus {
-                    agent: AgentId::Claude,
-                    status: IntegrationStatus::InvalidConfig,
-                    config_path: display,
-                    binary_path: binary,
-                    detail: Some("`mcpServers` is not an object".into()),
-                    can_write: false,
-                    can_remove: false,
-                };
+                return mcp_status(
+                    IntegrationStatus::InvalidConfig,
+                    display,
+                    binary,
+                    Some("`mcpServers` is not an object".into()),
+                    false,
+                    false,
+                );
             }
         }
 
         match entry_status(&value, template) {
-            EntryState::Absent => AgentIntegrationStatus {
-                agent: AgentId::Claude,
-                status: IntegrationStatus::NotInstalled,
-                config_path: display,
-                binary_path: binary,
-                detail: None,
-                can_write: true,
-                can_remove: true,
-            },
-            EntryState::Matches => AgentIntegrationStatus {
-                agent: AgentId::Claude,
-                status: IntegrationStatus::Installed,
-                config_path: display,
-                binary_path: binary,
-                detail: None,
-                can_write: true,
-                can_remove: true,
-            },
-            EntryState::Mismatch => AgentIntegrationStatus {
-                agent: AgentId::Claude,
-                status: IntegrationStatus::Outdated,
-                config_path: display,
-                binary_path: binary,
-                detail: Some("command, args, or timeout differ from template".into()),
-                can_write: true,
-                can_remove: true,
-            },
+            EntryState::Absent => mcp_status(
+                IntegrationStatus::NotInstalled,
+                display,
+                binary,
+                None,
+                true,
+                true,
+            ),
+            EntryState::Matches => mcp_status(
+                IntegrationStatus::Installed,
+                display,
+                binary,
+                None,
+                true,
+                true,
+            ),
+            EntryState::Mismatch => mcp_status(
+                IntegrationStatus::Outdated,
+                display,
+                binary,
+                Some("command, args, or timeout differ from template".into()),
+                true,
+                true,
+            ),
         }
     }
 
@@ -305,6 +296,30 @@ fn apply_uninstall_json(text: &str) -> Result<String, IntegrationError> {
     Ok(serde_json::to_string_pretty(&root)
         .map_err(|e| IntegrationError::InvalidConfig(e.to_string()))?
         + "\n")
+}
+
+/// Build MCP-only status; workflow fields are filled by `integrations::status_report`.
+fn mcp_status(
+    status: IntegrationStatus,
+    config_path: String,
+    binary_path: String,
+    detail: Option<String>,
+    can_write: bool,
+    can_remove: bool,
+) -> AgentIntegrationStatus {
+    AgentIntegrationStatus {
+        agent: AgentId::Claude,
+        status,
+        config_path,
+        binary_path,
+        detail,
+        can_write,
+        can_remove,
+        workflow_status: WorkflowStatus::NotEnabled,
+        workflow_path: String::new(),
+        workflow_detail: None,
+        can_write_workflow: true,
+    }
 }
 
 fn write_config(path: &Path, text: &str) -> Result<(), IntegrationError> {

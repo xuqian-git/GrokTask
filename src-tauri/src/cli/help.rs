@@ -39,8 +39,11 @@ Usage:
   {prog} list | show TASK_ID                           (aliases)
   {prog} tasks clear [--inactive-only]
 
-  {prog} agents status [codex|claude]
+  {prog} agents status [codex|claude] [--cwd PATH]
   {prog} agents mode codex|claude none|mcp
+  {prog} agents workflow status [codex|claude] [--cwd PATH]
+  {prog} agents workflow enable codex|claude [--cwd PATH]
+  {prog} agents workflow disable codex|claude [--cwd PATH]
 
   {prog} daemon run
   {prog} daemon start|stop|restart [--force]|status|logs

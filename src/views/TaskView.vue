@@ -9,6 +9,11 @@ import { getSharedExpansion, replaceSharedExpansionKey } from "@/lib/uiState";
 import type { ExpansionMap } from "@/lib/expansion";
 import type { TaskDetail, TaskListItem } from "@/lib/types";
 
+const props = defineProps<{
+  /** Prefer this task when opening from History / external navigation. */
+  initialTaskId?: string;
+}>();
+
 const tasks = ref<TaskListItem[]>([]);
 /** Empty until list loads — never force a demo id in real Tauri flows. */
 const selectedTaskId = ref<string>("");
@@ -53,13 +58,28 @@ watch(selectedTaskId, (id) => {
   if (id) void loadDetail(id);
 });
 
+// When parent navigates to another task (history click), update selection.
+watch(
+  () => props.initialTaskId,
+  (id) => {
+    if (id && id !== selectedTaskId.value) {
+      selectedTaskId.value = id;
+    }
+  },
+);
+
 onMounted(async () => {
   loading.value = true;
   error.value = null;
   try {
     tasks.value = await fetchTaskList();
-    // Prefer first real task; never force a demo id when the list is empty.
-    const nextId = tasks.value[0]?.taskId ?? "";
+    // Prefer deep-linked task, else first list entry; never force a demo id.
+    const preferred = props.initialTaskId;
+    const inList =
+      preferred && tasks.value.some((t) => t.taskId === preferred)
+        ? preferred
+        : "";
+    const nextId = inList || tasks.value[0]?.taskId || preferred || "";
     if (!nextId) {
       loading.value = false;
       return;

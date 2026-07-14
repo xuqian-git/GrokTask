@@ -3,13 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import SettingsView from "../src/views/SettingsView.vue";
 import * as settings from "../src/lib/settings";
 
-describe("Settings UI (Phase 5)", () => {
+describe("Settings UI (Phase 7)", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     settings.resetSettingsMocksForTests();
+    window.history.replaceState({}, "", "?");
   });
 
-  it("renders General tray mode controls from current config", async () => {
+  it("renders Chinese General tray mode controls", async () => {
     settings.resetSettingsMocksForTests();
     const w = mount(SettingsView, { attachTo: document.body });
     await new Promise((r) => setTimeout(r, 20));
@@ -17,19 +18,18 @@ describe("Settings UI (Phase 5)", () => {
 
     expect(w.find('[data-testid="settings-shell"]').exists()).toBe(true);
     expect(w.find('[data-testid="section-general"]').exists()).toBe(true);
+    expect(w.text()).toMatch(/通用|菜单栏/);
     const radios = w.findAll('[data-testid="tray-mode-controls"] input');
     expect(radios.length).toBe(3);
-    const checked = radios.find(
-      (r) => (r.element as HTMLInputElement).checked,
-    );
+    const checked = radios.find((r) => (r.element as HTMLInputElement).checked);
     expect((checked?.element as HTMLInputElement | undefined)?.value).toBe(
-      "off",
+      "active",
     );
 
     w.unmount();
   });
 
-  it("Integration cards show status, path, binary, and action buttons", async () => {
+  it("tools page shows MCP and workflow switches separately", async () => {
     settings.resetSettingsMocksForTests();
     const w = mount(SettingsView, { attachTo: document.body });
     await new Promise((r) => setTimeout(r, 20));
@@ -38,25 +38,52 @@ describe("Settings UI (Phase 5)", () => {
     await w.find('[data-testid="tab-integrations"]').trigger("click");
     await w.vm.$nextTick();
 
+    expect(w.find('[data-testid="section-integrations"]').exists()).toBe(true);
+    expect(w.text()).toMatch(/工具开关/);
+
     const codex = w.find('[data-testid="agent-card-codex"]');
     expect(codex.exists()).toBe(true);
-    expect(codex.find('[data-testid="agent-status"]').text()).toMatch(
-      /Not installed/i,
+    expect(codex.find('[data-testid="mcp-layer"]').exists()).toBe(true);
+    expect(codex.find('[data-testid="workflow-layer"]').exists()).toBe(true);
+    expect(codex.find('[data-testid="agent-status"]').text()).toMatch(/未安装/);
+    expect(codex.find('[data-testid="workflow-status"]').text()).toMatch(
+      /未启用/,
     );
     expect(codex.find('[data-testid="agent-config-path"]').text()).toContain(
       "config.toml",
     );
-    expect(codex.find('[data-testid="agent-binary-path"]').text()).toContain(
-      "GrokTask",
+    expect(codex.find('[data-testid="workflow-path"]').text()).toContain(
+      "AGENTS.md",
     );
     expect(codex.find('[data-testid="agent-install"]').exists()).toBe(true);
-    expect(codex.find('[data-testid="agent-remove"]').exists()).toBe(true);
+    expect(codex.find('[data-testid="workflow-enable"]').exists()).toBe(true);
     expect(codex.find('[data-testid="agent-reminder"]').exists()).toBe(true);
 
     w.unmount();
   });
 
-  it("install refreshes displayed status", async () => {
+  it("Settings tab click updates section and URL without second click", async () => {
+    settings.resetSettingsMocksForTests();
+    window.history.replaceState({}, "", "?view=settings&section=integrations");
+    const w = mount(SettingsView, { attachTo: document.body });
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    expect(w.find('[data-testid="section-integrations"]').exists()).toBe(true);
+
+    await w.find('[data-testid="tab-diagnostics"]').trigger("click");
+    await w.vm.$nextTick();
+
+    expect(w.find('[data-testid="section-diagnostics"]').exists()).toBe(true);
+    expect(w.find('[data-testid="section-integrations"]').exists()).toBe(false);
+    expect(window.location.search).toContain("section=diagnostics");
+    // Single click was enough — diagnostics is visible immediately.
+    expect(w.find('[data-testid="grok-state"]').exists()).toBe(true);
+
+    w.unmount();
+  });
+
+  it("install refreshes displayed MCP status", async () => {
     settings.resetSettingsMocksForTests();
     const w = mount(SettingsView, { attachTo: document.body });
     await new Promise((r) => setTimeout(r, 20));
@@ -72,12 +99,38 @@ describe("Settings UI (Phase 5)", () => {
     await w.vm.$nextTick();
 
     expect(
-      w.find('[data-testid="agent-card-codex"] [data-testid="agent-status"]')
+      w
+        .find('[data-testid="agent-card-codex"] [data-testid="agent-status"]')
         .text(),
-    ).toMatch(/Installed/i);
-    expect(w.find('[data-testid="action-result"]').text().length).toBeGreaterThan(
-      0,
+    ).toMatch(/已安装/);
+    expect(
+      w.find('[data-testid="action-result"]').text().length,
+    ).toBeGreaterThan(0);
+
+    w.unmount();
+  });
+
+  it("workflow enable updates workflow status independently of MCP", async () => {
+    settings.resetSettingsMocksForTests();
+    const w = mount(SettingsView, { attachTo: document.body });
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    await w.find('[data-testid="tab-integrations"]').trigger("click");
+    await w.vm.$nextTick();
+
+    await w
+      .find('[data-testid="agent-card-codex"] [data-testid="workflow-enable"]')
+      .trigger("click");
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    const card = w.find('[data-testid="agent-card-codex"]');
+    expect(card.find('[data-testid="workflow-status"]').text()).toMatch(
+      /已启用/,
     );
+    // MCP remains not installed when only workflow is enabled.
+    expect(card.find('[data-testid="agent-status"]').text()).toMatch(/未安装/);
 
     w.unmount();
   });
@@ -92,6 +145,10 @@ describe("Settings UI (Phase 5)", () => {
       detail: "invalid JSON: unexpected token",
       canWrite: false,
       canRemove: false,
+      workflowStatus: "invalid_file",
+      workflowPath: "/mock/workspace/CLAUDE.md",
+      workflowDetail: "malformed GrokTask managed block markers",
+      canWriteWorkflow: false,
     });
 
     const w = mount(SettingsView, { attachTo: document.body });
@@ -113,13 +170,18 @@ describe("Settings UI (Phase 5)", () => {
     expect(card.find('[data-testid="agent-disabled-reason"]').text()).toMatch(
       /invalid JSON/i,
     );
+    expect(
+      (
+        card.find('[data-testid="workflow-enable"]')
+          .element as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
 
     w.unmount();
   });
 
-  it("opens Integrations when section=integrations query is set", async () => {
+  it("opens 工具开关 when section=integrations query is set", async () => {
     const original = window.location.search;
-    // jsdom: replace search via history
     window.history.replaceState({}, "", "?view=settings&section=integrations");
 
     settings.resetSettingsMocksForTests();
@@ -128,9 +190,49 @@ describe("Settings UI (Phase 5)", () => {
     await w.vm.$nextTick();
 
     expect(w.find('[data-testid="section-integrations"]').exists()).toBe(true);
+    expect(w.text()).toMatch(/工具开关|MCP/);
 
     w.unmount();
     window.history.replaceState({}, "", original || "?");
+  });
+
+  it("disables workflow enable/disable when workspace cwd is missing", async () => {
+    settings.resetSettingsMocksForTests();
+    settings.setMockWorkspaceCwd("");
+
+    const w = mount(SettingsView, { attachTo: document.body });
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    await w.find('[data-testid="tab-integrations"]').trigger("click");
+    await w.vm.$nextTick();
+
+    const cwdLine = w.find('[data-testid="workspace-cwd"]');
+    expect(cwdLine.exists()).toBe(true);
+    expect(cwdLine.text()).toMatch(/无法解析|GrokTask setup/);
+    expect(w.find('[data-testid="workspace-cwd-missing"]').exists()).toBe(true);
+
+    const card = w.find('[data-testid="agent-card-codex"]');
+    expect(
+      (
+        card.find('[data-testid="workflow-enable"]')
+          .element as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      (
+        card.find('[data-testid="workflow-disable"]')
+          .element as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    expect(
+      card.find('[data-testid="workflow-disabled-reason"]').text(),
+    ).toMatch(/GrokTask setup|无法解析/);
+    // Must not present `/` or a silent fake writable path.
+    expect(cwdLine.text()).not.toMatch(/(^|\/)\s*\/\s*$/);
+    expect(cwdLine.text()).not.toContain("//");
+
+    w.unmount();
   });
 
   it("Diagnostics shows Grok CLI and tray capability", async () => {
@@ -145,6 +247,7 @@ describe("Settings UI (Phase 5)", () => {
     expect(w.find('[data-testid="section-diagnostics"]').exists()).toBe(true);
     expect(w.find('[data-testid="grok-state"]').exists()).toBe(true);
     expect(w.find('[data-testid="tray-capability"]').exists()).toBe(true);
+    expect(w.text()).toMatch(/诊断/);
 
     w.unmount();
   });

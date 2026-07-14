@@ -1,17 +1,20 @@
-//! Agent MCP integration management (Codex + Claude Code).
+//! Agent MCP integration management (Codex + Claude Code) and project workflow
+//! instruction injection.
 //!
-//! Only mutates each target's `groktask` entry. Tests must use temp config roots
-//! and never touch real `~/.codex` or `~/.claude.json`.
+//! Only mutates each target's `groktask` MCP entry and GrokTask managed
+//! instruction blocks. Tests must use temp config roots / temp workspaces and
+//! never touch real `~/.codex`, `~/.claude.json`, or user project files.
 
 mod claude;
 mod codex;
 mod types;
+pub mod workflow;
 
 pub use claude::{ClaudeIntegration, ClaudePaths};
 pub use codex::{CodexIntegration, CodexPaths};
 pub use types::{
     AgentId, AgentIntegrationStatus, AgentStatusReport, IntegrationError, IntegrationStatus,
-    McpEntryTemplate,
+    McpEntryTemplate, WorkflowStatus,
 };
 
 // Ensure IntegrationStatus stays in the public surface used by CLI/tests.
@@ -73,11 +76,38 @@ pub fn mcp_template(command: impl Into<String>) -> McpEntryTemplate {
     }
 }
 
-/// Status for one or both agents.
+/// Attach workflow inspection fields onto an MCP status card.
+fn with_workflow(
+    mut status: AgentIntegrationStatus,
+    workspace: Option<&Path>,
+) -> AgentIntegrationStatus {
+    match workspace {
+        Some(ws) => {
+            let w = workflow::inspect(ws, status.agent);
+            status.workflow_status = w.status;
+            status.workflow_path = w.path;
+            status.workflow_detail = w.detail;
+            status.can_write_workflow = w.can_write;
+        }
+        None => {
+            // Honest: no workspace chosen — path shows expected filename only.
+            let name = workflow::instruction_filename(status.agent);
+            status.workflow_status = WorkflowStatus::Unavailable;
+            status.workflow_path = format!("<workspace>/{name}");
+            status.workflow_detail =
+                Some("project workspace path required for workflow status".into());
+            status.can_write_workflow = false;
+        }
+    }
+    status
+}
+
+/// Status for one or both agents (MCP + optional workflow).
 pub fn status_report(
     roots: &IntegrationRoots,
     filter: Option<AgentId>,
     command: &str,
+    workspace: Option<&Path>,
 ) -> AgentStatusReport {
     let template = mcp_template(command);
     let mut agents = Vec::new();
@@ -90,13 +120,13 @@ pub fn status_report(
         let codex = CodexIntegration::new(CodexPaths {
             config_path: roots.codex_config(),
         });
-        agents.push(codex.status(&template));
+        agents.push(with_workflow(codex.status(&template), workspace));
     }
     if want(AgentId::Claude) {
         let claude = ClaudeIntegration::new(ClaudePaths {
             config_path: roots.claude_config(),
         });
-        agents.push(claude.status(&template));
+        agents.push(with_workflow(claude.status(&template), workspace));
     }
     AgentStatusReport { agents }
 }
@@ -167,6 +197,48 @@ pub fn set_mode(
     }
 }
 
+/// Enable project workflow instructions for `agent` under `workspace`.
+pub fn workflow_enable(
+    workspace: &Path,
+    agent: AgentId,
+) -> Result<workflow::WorkflowInspection, IntegrationError> {
+    workflow::enable(workspace, agent)
+}
+
+/// Disable project workflow instructions for `agent` under `workspace`.
+pub fn workflow_disable(
+    workspace: &Path,
+    agent: AgentId,
+) -> Result<workflow::WorkflowInspection, IntegrationError> {
+    workflow::disable(workspace, agent)
+}
+
+/// Inspect workflow only (no MCP).
+pub fn workflow_status(workspace: &Path, agent: AgentId) -> workflow::WorkflowInspection {
+    workflow::inspect(workspace, agent)
+}
+
+/// Resolve workspace for CLI/UI: explicit path, else current directory.
+pub fn resolve_workspace(cwd: Option<&Path>) -> Result<PathBuf, IntegrationError> {
+    match cwd {
+        Some(p) => {
+            let abs = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| IntegrationError::Unavailable(e.to_string()))?
+                    .join(p)
+            };
+            Ok(dunce_canonicalize(&abs).unwrap_or(abs))
+        }
+        None => {
+            let cwd = std::env::current_dir()
+                .map_err(|e| IntegrationError::Unavailable(format!("cannot resolve cwd: {e}")))?;
+            Ok(dunce_canonicalize(&cwd).unwrap_or(cwd))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,10 +248,14 @@ mod tests {
     fn status_not_installed_on_empty_home() {
         let tmp = TempDir::new().unwrap();
         let roots = IntegrationRoots::from_home(tmp.path());
-        let report = status_report(&roots, None, "/tmp/GrokTask");
+        let report = status_report(&roots, None, "/tmp/GrokTask", None);
         assert_eq!(report.agents.len(), 2);
         assert_eq!(report.agents[0].status, IntegrationStatus::NotInstalled);
         assert_eq!(report.agents[1].status, IntegrationStatus::NotInstalled);
+        assert_eq!(
+            report.agents[0].workflow_status,
+            WorkflowStatus::Unavailable
+        );
     }
 
     #[test]
@@ -205,5 +281,65 @@ mod tests {
         let roots = IntegrationRoots::from_home(tmp.path());
         let err = set_mode(&roots, AgentId::Codex, "plugin", "/x").unwrap_err();
         assert!(matches!(err, IntegrationError::Validation(_)));
+    }
+
+    #[test]
+    fn mcp_installed_workflow_disabled() {
+        let home = TempDir::new().unwrap();
+        let ws = TempDir::new().unwrap();
+        let roots = IntegrationRoots::from_home(home.path());
+        install(&roots, AgentId::Codex, "/opt/GrokTask").unwrap();
+        let report = status_report(
+            &roots,
+            Some(AgentId::Codex),
+            "/opt/GrokTask",
+            Some(ws.path()),
+        );
+        assert_eq!(report.agents[0].status, IntegrationStatus::Installed);
+        assert_eq!(report.agents[0].workflow_status, WorkflowStatus::NotEnabled);
+        assert!(report.agents[0].workflow_path.ends_with("AGENTS.md"));
+    }
+
+    #[test]
+    fn mcp_installed_and_workflow_enabled() {
+        let home = TempDir::new().unwrap();
+        let ws = TempDir::new().unwrap();
+        let roots = IntegrationRoots::from_home(home.path());
+        install(&roots, AgentId::Claude, "/opt/GrokTask").unwrap();
+        workflow_enable(ws.path(), AgentId::Claude).unwrap();
+        let report = status_report(
+            &roots,
+            Some(AgentId::Claude),
+            "/opt/GrokTask",
+            Some(ws.path()),
+        );
+        assert_eq!(report.agents[0].status, IntegrationStatus::Installed);
+        assert_eq!(report.agents[0].workflow_status, WorkflowStatus::Enabled);
+        assert!(report.agents[0].workflow_path.ends_with("CLAUDE.md"));
+    }
+
+    #[test]
+    fn workflow_outdated_and_invalid() {
+        let home = TempDir::new().unwrap();
+        let ws = TempDir::new().unwrap();
+        let roots = IntegrationRoots::from_home(home.path());
+        let path = ws.path().join("AGENTS.md");
+        // Outdated body
+        std::fs::write(
+            &path,
+            format!("{}\nold\n{}\n", workflow::BLOCK_BEGIN, workflow::BLOCK_END),
+        )
+        .unwrap();
+        let report = status_report(&roots, Some(AgentId::Codex), "/x", Some(ws.path()));
+        assert_eq!(report.agents[0].workflow_status, WorkflowStatus::Outdated);
+
+        // Invalid markers
+        std::fs::write(&path, format!("{}\nno end\n", workflow::BLOCK_BEGIN)).unwrap();
+        let report = status_report(&roots, Some(AgentId::Codex), "/x", Some(ws.path()));
+        assert_eq!(
+            report.agents[0].workflow_status,
+            WorkflowStatus::InvalidFile
+        );
+        assert!(!report.agents[0].can_write_workflow);
     }
 }
