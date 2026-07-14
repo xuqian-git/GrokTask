@@ -336,13 +336,26 @@ export class GrokActivityManager {
       return;
     }
     if (type === "tool") {
-      this.setPhase(job, "analyzing", "正在执行工具调用");
-      this.addEvent(job, "tool_call", `${event.title || "Grok 工具"} · ${event.status || "pending"}`, {
-        toolCallId: event.toolCallId || null,
-        kind: event.kind || null,
-        status: event.status || null,
-        acp: event.details ?? null,
-      });
+      const toolCallId = event.toolCallId || null;
+      const previous = toolCallId
+        ? [...job.events].reverse().find((item) => item.type === "tool_call" && item.details?.toolCallId === toolCallId)
+        : null;
+      const details = {
+        toolCallId,
+        kind: event.kind || previous?.details?.kind || null,
+        status: event.status || previous?.details?.status || null,
+        acp: {
+          ...(previous?.details?.acp && typeof previous.details.acp === "object" ? previous.details.acp : {}),
+          ...(event.details && typeof event.details === "object" ? event.details : {}),
+        },
+      };
+      if (previous) {
+        previous.summary = `${event.title || previous.summary.split(" · ")[0] || "Grok 工具"} · ${details.status || "pending"}`;
+        previous.details = details;
+        this.touch(job);
+      } else {
+        this.addEvent(job, "tool_call", `${event.title || "Grok 工具"} · ${event.status || "pending"}`, details);
+      }
       return;
     }
     if (type === "context_usage") {

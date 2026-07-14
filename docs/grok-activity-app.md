@@ -31,8 +31,8 @@ Chrome or any system browser.
 The dashboard follows the most recently started job. Its main transcript shows
 normalized ACP events as readable messages rather than complete protocol JSON.
 Thought chunks are nested under the stage where they occurred and include the
-raw thought text. Plans, tools, notifications, paths, and usage show only their
-human-readable contents. The
+raw thought text. Plans, tools, paths, and usage show only their human-readable
+contents. The
 live stage expands automatically; stages and event details opened by the user
 remain open across polling updates. Reply chunks appear as continuous text,
 and the final answer is rendered as safe Markdown without executing raw HTML.
@@ -41,6 +41,12 @@ following after they return to the bottom. It polls faster while a
 job is active and continues low-frequency polling after completion so a later
 job appears in the same page. Cancellation is a localhost POST guarded by the
 same random token.
+
+Internal ACP lifecycle notifications and command-loading updates remain in the
+server snapshot for diagnostics but are hidden from the transcript. Tool calls
+stay inside the current stage, merge updates by tool-call ID, and show only the
+actual command/path/input/output content instead of adding a separate tool-call
+phase.
 
 ## Security and privacy
 

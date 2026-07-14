@@ -82,6 +82,7 @@ test("dashboard polls localhost APIs without an MCP Apps bridge", () => {
   assert.match(script, /child\.type === "message_chunk"/);
   assert.match(script, /followTail/);
   assert.match(script, /readableEventMessage/);
+  assert.match(script, /hiddenEventTypes/);
   assert.doesNotMatch(script, /JSON\.stringify\(child\.details/);
   assert.doesNotMatch(script, /manuallyOpenStages\.delete\(autoOpenStageId\)/);
 });

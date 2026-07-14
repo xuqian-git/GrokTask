@@ -199,6 +199,7 @@
       const terminal = new Set(["completed", "failed", "cancelled"]);
       const labels = { queued: "等待中", running: "运行中", completed: "已完成", failed: "失败", cancelled: "已取消" };
       const phaseTypes = new Set(["queued", "starting", "analyzing", "responding", "verifying", "completed", "failed", "cancelled"]);
+      const hiddenEventTypes = new Set(["acp_notification", "acp_update", "lifecycle", "context_usage", "turn_end", "permission"]);
       const basePath = location.pathname.replace(/\/activity\/?$/, "");
       const activityApi = `${basePath}/api/activity`;
       let activity = null;
@@ -365,6 +366,9 @@
         const output = [];
         const seen = new Set();
         const allowed = new Set(["text", "message", "content", "title", "error", "reason"]);
+        if (child.type === "tool_call") {
+          ["command", "path", "output", "result", "description", "name"].forEach(key => allowed.add(key));
+        }
         const visit = (value, key = "", depth = 0) => {
           if (output.length >= 3 || depth > 6 || value == null) return;
           if (typeof value === "string") {
@@ -404,6 +408,7 @@
         const groups = [];
         let current = null;
         for (const event of events || []) {
+          if (hiddenEventTypes.has(event.type)) continue;
           if (phaseTypes.has(event.type) || !current) {
             current = { phase: event, events: [], thoughts: [] };
             groups.push(current);

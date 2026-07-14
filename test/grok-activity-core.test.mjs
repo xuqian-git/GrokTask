@@ -236,7 +236,11 @@ lines.on("line", line => {
   assert.match(JSON.stringify(final), /rawInput/);
   assert.match(JSON.stringify(final), /contents/);
   assert.ok(final.events.some((event) => event.type === "plan"));
-  assert.ok(final.events.some((event) => event.type === "tool_call"));
+  const toolEvents = final.events.filter((event) => event.type === "tool_call");
+  assert.equal(toolEvents.length, 1);
+  assert.equal(toolEvents[0].details.status, "completed");
+  assert.equal(toolEvents[0].details.acp.rawInput.path, "a.js");
+  assert.equal(toolEvents[0].details.acp.rawOutput.text, "contents");
   assert.ok(final.events.some((event) => event.type === "acp_notification" && event.summary.includes("_x.ai/settings/update")));
 });
 
