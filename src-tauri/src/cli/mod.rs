@@ -1,4 +1,5 @@
-//! CLI role dispatch. GUI/Tauri is only entered for explicit GUI roles.
+//! CLI role dispatch. GUI/Tauri is only entered for explicit GUI roles
+//! (`app`, `setup`, `--gui-host`) or a macOS `.app` bundle launch with no args.
 
 pub mod help;
 
@@ -11,6 +12,7 @@ use crate::ipc::client::{self, unwrap_result};
 use crate::ipc::protocol::ClientRole;
 use serde_json::json;
 use std::io::Write;
+use std::path::Path;
 use std::process::exit;
 use uuid::Uuid;
 
@@ -26,15 +28,59 @@ pub fn eprint_line(text: &str) {
     let _ = writeln!(err, "{text}").and_then(|_| err.flush());
 }
 
+/// What to do when the process is invoked with no CLI command argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoArgsAction {
+    /// Terminal / bare binary: print help and exit(1).
+    CliHelp,
+    /// macOS app-bundle double-click / `open …/GrokTask.app`: host the GUI.
+    GuiAppLaunch,
+}
+
+/// True when `exe` lives inside a macOS `.app` bundle (`…/Name.app/Contents/MacOS/…`).
+///
+/// Pure path check — used so unit tests do not need a real bundle layout.
+pub fn path_is_macos_app_bundle_exe(exe: &Path) -> bool {
+    // Normalize separators so Windows-style paths in tests still match the marker.
+    let s = exe.to_string_lossy().replace('\\', "/");
+    s.contains(".app/Contents/MacOS/")
+}
+
+/// Decide no-args behavior from pure inputs (testable without launching Tauri).
+pub fn no_args_action(is_macos_app_bundle: bool) -> NoArgsAction {
+    if is_macos_app_bundle {
+        NoArgsAction::GuiAppLaunch
+    } else {
+        NoArgsAction::CliHelp
+    }
+}
+
+fn current_exe_is_macos_app_bundle() -> bool {
+    std::env::current_exe()
+        .map(|p| path_is_macos_app_bundle_exe(&p))
+        .unwrap_or(false)
+}
+
 /// Top-level argv dispatch. Called from `main` before any Tauri initialization.
 pub fn dispatch() {
     let argv: Vec<String> = std::env::args().collect();
 
     if argv.len() < 2 {
-        eprint_line("error: missing command");
-        eprint_line(&format!("see `{} --help`", help::program_name()));
-        print_line(&help::help_text());
-        exit(1);
+        match no_args_action(current_exe_is_macos_app_bundle()) {
+            NoArgsAction::GuiAppLaunch => {
+                // In-process GUI host (show main window). Prefer focusing an
+                // existing instance rather than spawning a second detached host
+                // and exiting — that would make LaunchServices treat the .app
+                // as quit immediately after `open`.
+                crate::app::gui_host::run_as_app_bundle_launch();
+            }
+            NoArgsAction::CliHelp => {
+                eprint_line("error: missing command");
+                eprint_line(&format!("see `{} --help`", help::program_name()));
+                print_line(&help::help_text());
+                exit(1);
+            }
+        }
     }
 
     match argv[1].as_str() {
@@ -958,6 +1004,7 @@ fn integration_roots_for_cli() -> crate::integrations::IntegrationRoots {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn help_mentions_mcp_and_daemon() {
@@ -965,6 +1012,44 @@ mod tests {
         assert!(h.contains("mcp"));
         assert!(h.contains("daemon run"));
         assert!(!h.contains("--gui-host")); // hidden internal entry
+    }
+
+    #[test]
+    fn path_detects_macos_app_bundle_exe() {
+        let bundled = PathBuf::from("/Users/me/Applications/GrokTask.app/Contents/MacOS/GrokTask");
+        assert!(path_is_macos_app_bundle_exe(&bundled));
+
+        let bare = PathBuf::from("/Users/me/bin/GrokTask");
+        assert!(!path_is_macos_app_bundle_exe(&bare));
+
+        let release = PathBuf::from("/Users/me/proj/src-tauri/target/release/GrokTask");
+        assert!(!path_is_macos_app_bundle_exe(&release));
+
+        // Nested path must still match the Contents/MacOS marker.
+        let nested = PathBuf::from("/tmp/build/GrokTask.app/Contents/MacOS/GrokTask");
+        assert!(path_is_macos_app_bundle_exe(&nested));
+
+        // Incomplete bundle layout is not treated as an app launch.
+        assert!(!path_is_macos_app_bundle_exe(Path::new(
+            "/tmp/GrokTask.app/GrokTask"
+        )));
+        assert!(!path_is_macos_app_bundle_exe(Path::new(
+            "/tmp/Contents/MacOS/GrokTask"
+        )));
+    }
+
+    #[test]
+    fn no_args_routes_app_bundle_to_gui_else_cli_help() {
+        assert_eq!(
+            no_args_action(true),
+            NoArgsAction::GuiAppLaunch,
+            "macOS .app no-args must open the GUI, not print help"
+        );
+        assert_eq!(
+            no_args_action(false),
+            NoArgsAction::CliHelp,
+            "bare binary no-args keeps CLI help + exit(1)"
+        );
     }
 
     #[test]

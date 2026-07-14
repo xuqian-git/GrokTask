@@ -25,7 +25,8 @@ use tauri::{
 use tokio::io::BufReader;
 use tokio::sync::mpsc;
 
-/// Main window visibility at process start, before any navigation command.
+/// Main window visibility for the hidden internal `--gui-host` role
+/// (starts hidden until a navigation command shows it).
 pub fn initial_main_window_visible() -> bool {
     false
 }
@@ -36,14 +37,51 @@ struct HostState {
     current_task_id: Mutex<Option<String>>,
 }
 
-/// Run the GUI host. Acquires `gui-host.lock`; if already held, exits immediately.
+/// Run the GUI host for the hidden `--gui-host` role.
+/// Main window starts hidden; navigation IPC shows surfaces.
+/// Acquires `gui-host.lock`; if already held, exits immediately.
 pub fn run() -> ! {
+    run_impl(GuiHostLaunch {
+        show_main_on_start: false,
+        focus_existing_on_lock_busy: false,
+    })
+}
+
+/// macOS `.app` launch with no CLI args (double-click / `open GrokTask.app`).
+///
+/// Focuses an existing GUI host if one is already running; otherwise becomes
+/// the host in-process and shows the main window so LaunchServices keeps the
+/// app process associated with a visible UI.
+pub fn run_as_app_bundle_launch() -> ! {
+    // Fast path: another host already owns the lock / socket.
+    if try_navigate(GuiNavCommand::Focus) {
+        std::process::exit(0);
+    }
+    run_impl(GuiHostLaunch {
+        show_main_on_start: true,
+        focus_existing_on_lock_busy: true,
+    })
+}
+
+struct GuiHostLaunch {
+    /// When true, create the main window visible (app-bundle double-click).
+    show_main_on_start: bool,
+    /// When lock is already held, try Focus navigate before exiting (app re-open).
+    focus_existing_on_lock_busy: bool,
+}
+
+fn run_impl(launch: GuiHostLaunch) -> ! {
     match acquire_lock_at(&paths::gui_host_lock()) {
         Ok(LockResult::Acquired(_guard)) => {
             std::mem::forget(_guard);
         }
         Ok(LockResult::AlreadyRunning) => {
-            eprintln!("gui-host already running");
+            if launch.focus_existing_on_lock_busy {
+                // Race: host appeared between try_navigate and lock acquisition.
+                let _ = try_navigate(GuiNavCommand::Focus);
+            } else {
+                eprintln!("gui-host already running");
+            }
             std::process::exit(0);
         }
         Err(e) => {
@@ -61,6 +99,7 @@ pub fn run() -> ! {
     let tray_mode = config.config.general.tray_mode;
     let popover_w = config.config.ui.popover_width;
     let popover_h = config.config.ui.popover_height;
+    let show_main_on_start = launch.show_main_on_start;
 
     // Best-effort login item sync for always mode.
     let _ = login_item::sync_login_item_for_mode(tray_mode);
@@ -132,7 +171,7 @@ pub fn run() -> ! {
             }
         })
         .setup(move |app| {
-            // Hidden main window — single-instance task surface.
+            // Main window: hidden for `--gui-host` until nav; visible for .app launch.
             let _main = WebviewWindowBuilder::new(
                 app,
                 window_label::MAIN,
@@ -141,7 +180,7 @@ pub fn run() -> ! {
             .title("GrokTask")
             .inner_size(1120.0, 760.0)
             .min_inner_size(900.0, 640.0)
-            .visible(initial_main_window_visible())
+            .visible(show_main_on_start)
             .build()?;
 
             // Initial launch honors stored trayMode; later Settings changes call
