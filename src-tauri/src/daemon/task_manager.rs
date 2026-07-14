@@ -757,6 +757,8 @@ impl TaskManager {
 
         let session_id = "fixture-session";
         let mut reducer = TurnReducer::new(task_id, turn_id, session_id);
+        // Local seed is already persisted; prime reducer so ACP user echoes dedupe.
+        reducer.seed_existing_user_message(&input.task);
 
         // Synthetic ACP stream: thought → tool → thought → reply
         let lines = [
@@ -895,6 +897,8 @@ impl TaskManager {
         }
 
         let mut reducer = TurnReducer::new(task_id, turn_id, &session_id);
+        // Local seed is already persisted; prime reducer so ACP user echoes dedupe.
+        reducer.seed_existing_user_message(&input.task);
 
         // session/prompt
         let prompt_id: i64 = 3;

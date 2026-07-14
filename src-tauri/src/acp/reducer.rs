@@ -137,6 +137,39 @@ impl TurnReducer {
         std::mem::take(&mut self.pending_mutations)
     }
 
+    /// Record a locally pre-persisted user prompt so identical ACP user echoes
+    /// are deduped by [`Self::apply`]. Does not enqueue a timeline mutation
+    /// (the seed is already on disk via `TaskManager::seed_user_message`).
+    ///
+    /// Item id matches the seed: `seg:{turn_id}:0:user`.
+    pub fn seed_existing_user_message(&mut self, prompt: &str) {
+        let item_id = format!("seg:{}:0:user", self.turn_id);
+        if self
+            .items
+            .iter()
+            .any(|i| i.kind == ItemKind::UserMessage.as_str() && i.item_id == item_id)
+        {
+            return;
+        }
+        self.items.push(TimelineItem {
+            item_id,
+            kind: ItemKind::UserMessage.as_str().into(),
+            turn_id: self.turn_id.clone(),
+            title: None,
+            message: first_line_truncated(prompt, 120),
+            text: prompt.to_string(),
+            status: None,
+            tool_call_id: None,
+            tool_kind: None,
+            locations: vec![],
+            plan_entries: None,
+            streaming: false,
+            answer_mark: None,
+            stage_title: None,
+            diagnostic: None,
+        });
+    }
+
     pub fn answer_markdown(&self) -> String {
         self.items
             .iter()
@@ -847,5 +880,100 @@ mod tests {
             .collect();
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].plan_entries.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn seeded_user_message_dedupes_identical_acp_echo() {
+        let prompt = "Reply with exactly: hello";
+        let mut r = TurnReducer::new("task", "turn", "sess");
+        r.seed_existing_user_message(prompt);
+        assert!(r.take_mutations().is_empty());
+        assert_eq!(r.items().len(), 1);
+        assert_eq!(r.items()[0].kind, "user_message");
+        assert_eq!(r.items()[0].text, prompt);
+        assert_eq!(r.items()[0].item_id, "seg:turn:0:user");
+
+        r.apply(NormalizedUpdate::UserMessage {
+            text: prompt.into(),
+            message_id: None,
+            meta: None,
+        });
+        assert!(
+            r.take_mutations().is_empty(),
+            "identical ACP user echo must not create a second card"
+        );
+        assert_eq!(r.items().len(), 1);
+        assert_eq!(r.items()[0].item_id, "seg:turn:0:user");
+    }
+
+    #[test]
+    fn seeded_user_message_accepts_different_user_text() {
+        let mut r = TurnReducer::new("task", "turn", "sess");
+        r.seed_existing_user_message("first prompt");
+        r.take_mutations();
+
+        r.apply(NormalizedUpdate::UserMessage {
+            text: "follow-up from user".into(),
+            message_id: None,
+            meta: None,
+        });
+        let muts = r.take_mutations();
+        assert_eq!(muts.len(), 1);
+        assert_eq!(muts[0].operation, "add");
+        assert_eq!(muts[0].item.kind, "user_message");
+        assert_eq!(muts[0].item.text, "follow-up from user");
+
+        let users: Vec<_> = r
+            .items()
+            .iter()
+            .filter(|i| i.kind == "user_message")
+            .collect();
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[0].text, "first prompt");
+        assert_eq!(users[1].text, "follow-up from user");
+    }
+
+    #[test]
+    fn seeded_user_then_stream_preserves_order_with_single_user() {
+        let prompt = "do the thing";
+        let mut r = TurnReducer::new("task", "turn", "sess");
+        r.seed_existing_user_message(prompt);
+        r.apply(NormalizedUpdate::UserMessage {
+            text: prompt.into(),
+            message_id: Some("echo-1".into()),
+            meta: None,
+        });
+        for up in normalize_line(&thought("Planning")) {
+            r.apply(up);
+        }
+        for up in normalize_line(&tool("t1", "README.md")) {
+            r.apply(up);
+        }
+        for up in normalize_line(&thought("Drafting")) {
+            r.apply(up);
+        }
+        for up in normalize_line(&msg("done")) {
+            r.apply(up);
+        }
+        r.finalize_turn(Some("finalAnswer"));
+
+        let kinds: Vec<_> = r.items().iter().map(|i| i.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "user_message",
+                "reasoning_segment",
+                "tool_call",
+                "reasoning_segment",
+                "assistant_segment"
+            ]
+        );
+        let users: Vec<_> = r
+            .items()
+            .iter()
+            .filter(|i| i.kind == "user_message")
+            .collect();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].text, prompt);
     }
 }
