@@ -168,6 +168,244 @@ pub fn read_meta_at(path: &Path) -> io::Result<Option<DaemonMeta>> {
     Ok(Some(meta))
 }
 
+/// Remove `daemon.json` (best-effort).
+pub fn remove_meta() {
+    let _ = std::fs::remove_file(paths::daemon_meta());
+}
+
+/// Remove daemon meta + Unix socket endpoint. Does **not** signal any process.
+pub fn clear_daemon_runtime_files() {
+    remove_meta();
+    #[cfg(unix)]
+    {
+        let _ = std::fs::remove_file(paths::daemon_sock());
+    }
+}
+
+/// Why a meta file does not represent a healthy serving daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StaleReason {
+    /// PID is dead, does not exist, or is a zombie/defunct entry.
+    ProcessNotLive,
+    /// Process appears live but the IPC endpoint is missing or not connectable.
+    EndpointUnusable,
+}
+
+/// Result of inspecting on-disk daemon metadata against process/endpoint reality.
+#[derive(Debug, Clone)]
+pub enum DaemonPresence {
+    /// No `daemon.json`.
+    Absent,
+    /// Meta present and daemon is considered healthy (live, non-zombie PID + usable endpoint).
+    Running(DaemonMeta),
+    /// Meta present but not a healthy daemon. Runtime files may still be on disk until reclaimed.
+    Stale {
+        meta: DaemonMeta,
+        reason: StaleReason,
+    },
+}
+
+/// True when the process table has a non-zombie entry for `pid`.
+///
+/// `kill(pid, 0)` alone is insufficient on Unix: zombie/defunct PIDs still
+/// succeed that probe, which previously left CLI lifecycle stuck on stale meta.
+pub fn process_is_live(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        if rc != 0 {
+            return false;
+        }
+        // Defunct/zombie entries must not count as a running daemon.
+        !process_is_zombie(pid).unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h == 0 || h == -1isize as _ {
+                return false;
+            }
+            CloseHandle(h);
+            true
+        }
+    }
+}
+
+/// Whether the daemon IPC endpoint appears present and accept()ing connections.
+pub fn daemon_endpoint_usable() -> bool {
+    #[cfg(unix)]
+    {
+        let path = paths::daemon_sock();
+        if !path.exists() {
+            return false;
+        }
+        // A leftover socket inode with no listener is not usable.
+        match std::os::unix::net::UnixStream::connect(&path) {
+            Ok(_stream) => true,
+            Err(_) => false,
+        }
+    }
+    #[cfg(windows)]
+    {
+        daemon_endpoint_usable_windows()
+    }
+}
+
+#[cfg(windows)]
+fn daemon_endpoint_usable_windows() -> bool {
+    // Best-effort: try opening the named pipe once. Busy/open failures that are
+    // not "not found" still imply a server side exists.
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
+
+    let name = paths::daemon_pipe_name();
+    let wide: Vec<u16> = OsStr::new(&name)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let h = CreateFileW(
+            wide.as_ptr(),
+            FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            0,
+        );
+        if h == 0 || h == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        CloseHandle(h);
+        true
+    }
+}
+
+/// Live non-zombie process **and** a connectable IPC endpoint.
+pub fn is_daemon_healthy(meta: &DaemonMeta) -> bool {
+    process_is_live(meta.pid) && daemon_endpoint_usable()
+}
+
+/// Inspect meta against process table and endpoint without mutating disk.
+pub fn inspect_daemon() -> io::Result<DaemonPresence> {
+    match read_meta()? {
+        None => Ok(DaemonPresence::Absent),
+        Some(meta) => {
+            if !process_is_live(meta.pid) {
+                return Ok(DaemonPresence::Stale {
+                    meta,
+                    reason: StaleReason::ProcessNotLive,
+                });
+            }
+            if !daemon_endpoint_usable() {
+                return Ok(DaemonPresence::Stale {
+                    meta,
+                    reason: StaleReason::EndpointUnusable,
+                });
+            }
+            Ok(DaemonPresence::Running(meta))
+        }
+    }
+}
+
+/// If meta claims a daemon that is not healthy, remove meta + socket.
+/// Never signals processes (safe when PID identity cannot be verified).
+///
+/// Returns `true` when stale state was cleared.
+pub fn reclaim_stale_daemon_state() -> io::Result<bool> {
+    match inspect_daemon()? {
+        DaemonPresence::Stale { meta, reason } => {
+            log_line(&format!(
+                "reclaiming stale daemon state pid={} reason={reason:?} endpoint={}",
+                meta.pid, meta.socket
+            ));
+            clear_daemon_runtime_files();
+            Ok(true)
+        }
+        DaemonPresence::Absent | DaemonPresence::Running(_) => Ok(false),
+    }
+}
+
+/// Whether `pid` is a zombie/defunct process table entry.
+///
+/// Returns `None` when the platform cannot determine state (treat as non-zombie
+/// only if other health signals still pass).
+#[cfg(unix)]
+fn process_is_zombie(pid: u32) -> Option<bool> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        return process_is_zombie_linux(pid);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return process_is_zombie_macos(pid);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn process_is_zombie_linux(pid: u32) -> Option<bool> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // Format: "pid (comm) state ..." — comm may contain spaces/parens; state follows the last ')'.
+    let after_comm = stat.rsplit_once(')')?.1;
+    let state = after_comm.trim_start().chars().next()?;
+    Some(state == 'Z')
+}
+
+#[cfg(target_os = "macos")]
+fn process_is_zombie_macos(pid: u32) -> Option<bool> {
+    // libproc PROC_PIDTBSDINFO — `pbi_status == SZOMB (5)` means defunct.
+    // We only need the first two u32 fields (`pbi_flags`, `pbi_status`); the
+    // buffer is oversized to match Darwin's `struct proc_bsdinfo`.
+    const PROC_PIDTBSDINFO: i32 = 3;
+    const SZOMB: u32 = 5;
+    // Historical sizeof(struct proc_bsdinfo) is 296–304 depending on SDK; 512 is safe.
+    const BUF_LEN: usize = 512;
+
+    extern "C" {
+        fn proc_pidinfo(
+            pid: i32,
+            flavor: i32,
+            arg: u64,
+            buffer: *mut libc::c_void,
+            buffersize: i32,
+        ) -> i32;
+    }
+
+    let mut buf = [0u8; BUF_LEN];
+    let n = unsafe {
+        proc_pidinfo(
+            pid as i32,
+            PROC_PIDTBSDINFO,
+            0,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            BUF_LEN as i32,
+        )
+    };
+    if n < 8 {
+        return None;
+    }
+    let status = u32::from_ne_bytes(buf[4..8].try_into().ok()?);
+    Some(status == SZOMB)
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -251,6 +489,7 @@ pub fn log_line(msg: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paths::GROKTASK_HOME_ENV;
     use tempfile::TempDir;
 
     #[test]
@@ -289,5 +528,115 @@ mod tests {
         b.undelivered_accepts
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         assert!(!b.is_safe_to_replace());
+    }
+
+    #[test]
+    fn process_is_live_rejects_zero_and_missing_pid() {
+        assert!(!process_is_live(0));
+        // Extremely unlikely to be allocated; kill(0)/OpenProcess should fail.
+        assert!(!process_is_live(u32::MAX - 1));
+        assert!(process_is_live(std::process::id()));
+    }
+
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = paths::test_env_lock();
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os(GROKTASK_HOME_ENV);
+        std::env::set_var(GROKTASK_HOME_ENV, tmp.path());
+        f();
+        match prev {
+            Some(v) => std::env::set_var(GROKTASK_HOME_ENV, v),
+            None => std::env::remove_var(GROKTASK_HOME_ENV),
+        }
+    }
+
+    #[test]
+    fn inspect_dead_pid_is_stale_not_running() {
+        with_temp_home(|| {
+            let mut meta = DaemonMeta::new(
+                paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = u32::MAX - 1;
+            write_meta(&meta).unwrap();
+
+            match inspect_daemon().unwrap() {
+                DaemonPresence::Stale {
+                    reason: StaleReason::ProcessNotLive,
+                    meta: got,
+                } => assert_eq!(got.pid, meta.pid),
+                other => panic!("expected ProcessNotLive stale, got {other:?}"),
+            }
+            assert!(!is_daemon_healthy(&meta));
+        });
+    }
+
+    #[test]
+    fn inspect_live_pid_without_socket_is_stale() {
+        with_temp_home(|| {
+            let mut meta = DaemonMeta::new(
+                paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = std::process::id();
+            write_meta(&meta).unwrap();
+            // No daemon.sock — must not report healthy Running.
+            assert!(!paths::daemon_sock().exists());
+            assert!(!daemon_endpoint_usable());
+
+            match inspect_daemon().unwrap() {
+                DaemonPresence::Stale {
+                    reason: StaleReason::EndpointUnusable,
+                    ..
+                } => {}
+                other => panic!("expected EndpointUnusable stale, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn reclaim_clears_stale_meta_and_socket_files() {
+        with_temp_home(|| {
+            let mut meta = DaemonMeta::new(
+                paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = u32::MAX - 1;
+            write_meta(&meta).unwrap();
+            // Leftover socket inode (not listening).
+            std::fs::write(paths::daemon_sock(), b"").unwrap();
+
+            assert!(reclaim_stale_daemon_state().unwrap());
+            assert!(!paths::daemon_meta().exists());
+            assert!(!paths::daemon_sock().exists());
+            assert!(matches!(inspect_daemon().unwrap(), DaemonPresence::Absent));
+            // Second reclaim is a no-op.
+            assert!(!reclaim_stale_daemon_state().unwrap());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspect_running_requires_connectable_socket() {
+        with_temp_home(|| {
+            use std::os::unix::net::UnixListener;
+
+            // Bound listener keeps the socket connectable; health probes only
+            // connect+drop and do not require an active accept loop.
+            let _listener = UnixListener::bind(paths::daemon_sock()).unwrap();
+            let mut meta = DaemonMeta::new(
+                paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = std::process::id();
+            write_meta(&meta).unwrap();
+
+            match inspect_daemon().unwrap() {
+                DaemonPresence::Running(got) => assert_eq!(got.pid, meta.pid),
+                other => panic!("expected Running, got {other:?}"),
+            }
+            assert!(is_daemon_healthy(&meta));
+            clear_daemon_runtime_files();
+        });
     }
 }

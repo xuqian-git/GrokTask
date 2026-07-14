@@ -13,21 +13,21 @@ use tokio::io::{AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
 /// Ensure a daemon is reachable, starting one if needed.
+///
+/// Delegates to [`daemon::start_detached`], which reclaims stale `daemon.json`
+/// (dead/zombie PID or missing socket) before trusting metadata, so clients
+/// never no-op on a defunct "Running" claim.
 pub fn ensure_daemon() -> Result<()> {
-    match daemon::status_text() {
-        Ok(s) if s.starts_with("running ") => Ok(()),
-        _ => {
-            daemon::start_detached().context("start daemon")?;
-            // Wait for endpoint
-            for _ in 0..50 {
-                if matches!(daemon::status_text(), Ok(s) if s.starts_with("running ")) {
-                    return Ok(());
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Ok(())
+    use crate::daemon::lifecycle::{self, DaemonPresence};
+
+    daemon::start_detached().context("start daemon")?;
+    for _ in 0..50 {
+        if matches!(lifecycle::inspect_daemon()?, DaemonPresence::Running(_)) {
+            return Ok(());
         }
+        std::thread::sleep(Duration::from_millis(100));
     }
+    Ok(())
 }
 
 /// Blocking request helper used by CLI/MCP.

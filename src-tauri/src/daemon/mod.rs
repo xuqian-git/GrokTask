@@ -17,8 +17,8 @@ use crate::storage::{self, DeletionGuards};
 use crate::version::{APP_VERSION, PROTOCOL_VERSION};
 use anyhow::{anyhow, Context, Result};
 use lifecycle::{
-    acquire_lock, read_meta, write_meta, DaemonMeta, DaemonRunStatus, LockResult,
-    ReplacementBarrier, REPLACEMENT_DRAIN_SECS,
+    acquire_lock, write_meta, DaemonMeta, DaemonRunStatus, LockResult, ReplacementBarrier,
+    REPLACEMENT_DRAIN_SECS,
 };
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -527,95 +527,119 @@ fn task_err_response(request_id: &str, e: TaskError) -> Response {
     Response::err(request_id, e.code(), e.message(), e.retryable())
 }
 
-pub fn start_detached() -> Result<()> {
-    // If already running, no-op success.
-    if let Ok(Some(meta)) = read_meta() {
-        if process_alive(meta.pid) {
-            return Ok(());
+/// Reclaim stale runtime state and decide whether a detached spawn is required.
+///
+/// Returns `true` when no healthy daemon is present after reclaim (caller should
+/// spawn). Returns `false` when a live PID + usable endpoint already exist
+/// (start may no-op). Never launches a process.
+///
+/// Extracted so unit tests can cover the stale-meta regression without spawning
+/// a long-lived detached daemon.
+pub fn prepare_detached_start() -> Result<bool> {
+    // Drop zombie/dead/missing-socket metadata so we never no-op on stale Running.
+    let _ = lifecycle::reclaim_stale_daemon_state();
+    Ok(!matches!(
+        lifecycle::inspect_daemon()?,
+        lifecycle::DaemonPresence::Running(_)
+    ))
+}
+
+/// Clear non-healthy daemon state (and stop a healthy daemon when present).
+/// Does **not** spawn a replacement process — callers invoke
+/// [`start_detached`] / [`prepare_detached_start`] afterward.
+pub fn prepare_restart(force: bool) -> Result<()> {
+    // Always drop stale meta first so force-restart cannot leave "Running" without a socket.
+    let _ = lifecycle::reclaim_stale_daemon_state();
+    match lifecycle::inspect_daemon()? {
+        lifecycle::DaemonPresence::Running(_) => {
+            if !force {
+                lifecycle::log_line("restart without --force: requesting stop then start");
+            }
+            let _ = stop();
         }
+        lifecycle::DaemonPresence::Stale { .. } => {
+            lifecycle::clear_daemon_runtime_files();
+        }
+        lifecycle::DaemonPresence::Absent => {}
+    }
+    Ok(())
+}
+
+pub fn start_detached() -> Result<()> {
+    if !prepare_detached_start()? {
+        return Ok(());
     }
     spawn::spawn_detached()?;
-    // Brief wait for lock/meta.
+    // Brief wait for lock/meta + usable endpoint.
     for _ in 0..50 {
         std::thread::sleep(Duration::from_millis(100));
-        if let Ok(Some(meta)) = read_meta() {
-            if process_alive(meta.pid) {
-                return Ok(());
-            }
+        if matches!(
+            lifecycle::inspect_daemon()?,
+            lifecycle::DaemonPresence::Running(_)
+        ) {
+            return Ok(());
         }
     }
     Ok(())
 }
 
 pub fn stop() -> Result<()> {
-    let meta = read_meta()?.ok_or_else(|| anyhow!("daemon not running"))?;
-    if !process_alive(meta.pid) {
-        transport::remove_stale_daemon_endpoint();
+    // Reclaim pure stale state first (dead/zombie/missing socket).
+    if lifecycle::reclaim_stale_daemon_state()? {
         return Ok(());
     }
+    let meta = match lifecycle::inspect_daemon()? {
+        lifecycle::DaemonPresence::Running(m) => m,
+        lifecycle::DaemonPresence::Absent => {
+            return Err(anyhow!("daemon not running"));
+        }
+        lifecycle::DaemonPresence::Stale { .. } => {
+            // Race: became stale after reclaim check.
+            lifecycle::clear_daemon_runtime_files();
+            return Ok(());
+        }
+    };
+
+    // Endpoint is usable and process is live — safe enough to signal this PID.
+    // (Unverified PIDs are handled by reclaim without kill.)
     terminate_pid(meta.pid)?;
     for _ in 0..50 {
-        if !process_alive(meta.pid) {
-            transport::remove_stale_daemon_endpoint();
+        if !lifecycle::process_is_live(meta.pid) {
+            lifecycle::clear_daemon_runtime_files();
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
     force_kill_pid(meta.pid)?;
-    transport::remove_stale_daemon_endpoint();
+    lifecycle::clear_daemon_runtime_files();
     Ok(())
 }
 
 pub fn restart(force: bool) -> Result<()> {
-    if let Ok(Some(meta)) = read_meta() {
-        if process_alive(meta.pid) {
-            if !force {
-                // Without force, refuse if we cannot know barrier — foundation: attempt stop.
-                lifecycle::log_line("restart without --force: requesting stop then start");
-            }
-            let _ = stop();
-        }
-    }
+    prepare_restart(force)?;
     start_detached()
 }
 
 pub fn status_text() -> Result<String> {
-    match read_meta()? {
-        Some(meta) if process_alive(meta.pid) => Ok(format!(
+    // Surface and opportunistically clear stale metadata so CLI status matches reality.
+    match lifecycle::inspect_daemon()? {
+        lifecycle::DaemonPresence::Running(meta) => Ok(format!(
             "running pid={} version={} instance={} endpoint={} status={:?}",
             meta.pid, meta.version, meta.daemon_instance_id, meta.socket, meta.status
         )),
-        Some(meta) => Ok(format!(
-            "stale meta pid={} (process not alive) endpoint={}",
-            meta.pid, meta.socket
-        )),
-        None => Ok("not running".into()),
-    }
-}
-
-fn process_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        let rc = unsafe { libc::kill(pid as i32, 0) };
-        rc == 0
-    }
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-        unsafe {
-            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if h == 0 || h == -1isize as _ {
-                return false;
-            }
-            CloseHandle(h);
-            true
+        lifecycle::DaemonPresence::Stale { meta, reason } => {
+            let detail = match reason {
+                lifecycle::StaleReason::ProcessNotLive => "process not alive",
+                lifecycle::StaleReason::EndpointUnusable => "endpoint missing or unusable",
+            };
+            // Clear so subsequent start/run/ensure do not treat this as Running.
+            lifecycle::clear_daemon_runtime_files();
+            Ok(format!(
+                "stale meta pid={} ({detail}) endpoint={}",
+                meta.pid, meta.socket
+            ))
         }
+        lifecycle::DaemonPresence::Absent => Ok("not running".into()),
     }
 }
 
@@ -684,6 +708,161 @@ mod tests {
         assert!(matches!(a, LockResult::Acquired(_)));
         let b = lifecycle::acquire_lock_at(&path).unwrap();
         assert!(matches!(b, LockResult::AlreadyRunning));
+    }
+
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let _g = crate::paths::test_env_lock();
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var_os(GROKTASK_HOME_ENV);
+        std::env::set_var(GROKTASK_HOME_ENV, tmp.path());
+        f();
+        match prev {
+            Some(v) => std::env::set_var(GROKTASK_HOME_ENV, v),
+            None => std::env::remove_var(GROKTASK_HOME_ENV),
+        }
+    }
+
+    #[test]
+    fn status_text_rejects_dead_pid_meta_as_running() {
+        with_temp_home(|| {
+            let mut meta = DaemonMeta::new(
+                crate::paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = u32::MAX - 1;
+            write_meta(&meta).unwrap();
+
+            let text = status_text().unwrap();
+            assert!(
+                !text.starts_with("running "),
+                "dead pid must not look healthy: {text}"
+            );
+            assert!(text.contains("stale meta"), "got: {text}");
+            // status opportunistically clears stale files
+            assert!(!crate::paths::daemon_meta().exists());
+        });
+    }
+
+    #[test]
+    fn status_text_rejects_live_pid_without_socket() {
+        with_temp_home(|| {
+            let mut meta = DaemonMeta::new(
+                crate::paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = std::process::id();
+            write_meta(&meta).unwrap();
+
+            let text = status_text().unwrap();
+            assert!(
+                !text.starts_with("running "),
+                "missing socket must not look healthy: {text}"
+            );
+            assert!(
+                text.contains("endpoint missing") || text.contains("stale meta"),
+                "got: {text}"
+            );
+            assert!(!crate::paths::daemon_meta().exists());
+        });
+    }
+
+    #[test]
+    fn prepare_detached_start_does_not_noop_on_stale_running_meta() {
+        with_temp_home(|| {
+            // Simulate the smoke failure: daemon.json claims Running for a dead PID,
+            // no socket. Start decision must reclaim and request spawn — never treat
+            // stale meta as healthy (and never launch a real detached daemon here).
+            let mut meta = DaemonMeta::new(
+                crate::paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = u32::MAX - 1;
+            meta.status = DaemonRunStatus::Running;
+            write_meta(&meta).unwrap();
+
+            let need_spawn = prepare_detached_start().unwrap();
+            assert!(
+                need_spawn,
+                "stale Running meta must not be treated as healthy no-op"
+            );
+            assert!(
+                !crate::paths::daemon_meta().exists(),
+                "stale meta must be reclaimed before spawn decision"
+            );
+            assert!(matches!(
+                lifecycle::inspect_daemon().unwrap(),
+                lifecycle::DaemonPresence::Absent
+            ));
+            // Absent home: second prepare still requests spawn.
+            assert!(prepare_detached_start().unwrap());
+        });
+    }
+
+    #[test]
+    fn prepare_restart_clears_stale_meta_without_spawn() {
+        with_temp_home(|| {
+            let mut meta = DaemonMeta::new(
+                crate::paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = u32::MAX - 1;
+            meta.status = DaemonRunStatus::Running;
+            write_meta(&meta).unwrap();
+            std::fs::write(crate::paths::daemon_sock(), b"").unwrap();
+
+            prepare_restart(true).unwrap();
+            assert!(
+                !crate::paths::daemon_meta().exists(),
+                "restart prep must drop stale dead-pid meta"
+            );
+            assert!(
+                !crate::paths::daemon_sock().exists(),
+                "restart prep must drop leftover socket without signaling PID"
+            );
+            assert!(matches!(
+                lifecycle::inspect_daemon().unwrap(),
+                lifecycle::DaemonPresence::Absent
+            ));
+            // Spawn is a separate step; after prep, start still needs a daemon.
+            assert!(prepare_detached_start().unwrap());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_detached_start_noops_when_healthy() {
+        with_temp_home(|| {
+            use std::os::unix::net::UnixListener;
+
+            let _listener = UnixListener::bind(crate::paths::daemon_sock()).unwrap();
+            let mut meta = DaemonMeta::new(
+                crate::paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = std::process::id();
+            write_meta(&meta).unwrap();
+
+            assert!(
+                !prepare_detached_start().unwrap(),
+                "healthy live PID + connectable socket must no-op start"
+            );
+            assert!(crate::paths::daemon_meta().exists());
+            lifecycle::clear_daemon_runtime_files();
+        });
+    }
+
+    #[test]
+    fn stop_clears_stale_meta_without_error() {
+        with_temp_home(|| {
+            let mut meta = DaemonMeta::new(
+                crate::paths::daemon_sock().display().to_string(),
+                BinaryFingerprint::ZERO,
+            );
+            meta.pid = u32::MAX - 1;
+            write_meta(&meta).unwrap();
+            stop().unwrap();
+            assert!(!crate::paths::daemon_meta().exists());
+        });
     }
 
     #[tokio::test]
