@@ -231,7 +231,11 @@ pub enum GuiNavCommand {
     #[serde(rename = "gui.open_history")]
     OpenHistory,
     #[serde(rename = "gui.open_settings")]
-    OpenSettings,
+    OpenSettings {
+        /// Optional settings section (e.g. `integrations` for `GrokTask setup`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        section: Option<String>,
+    },
     #[serde(rename = "gui.focus")]
     Focus,
     #[serde(rename = "gui.quit")]

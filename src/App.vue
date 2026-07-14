@@ -42,7 +42,7 @@ onMounted(() => {
   <div class="app-shell" :data-surface="surface">
     <header v-if="showChrome" class="app-header">
       <h1>{{ title }}</h1>
-      <span class="badge">Phase 4</span>
+      <span class="badge">Phase 5</span>
       <nav class="nav" aria-label="Surfaces">
         <button
           type="button"

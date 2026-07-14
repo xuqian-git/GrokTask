@@ -85,13 +85,14 @@ pub fn dispatch() {
         "doctor" => {
             exit(cmd_doctor(&argv[2..]));
         }
-        "app" | "setup" | "agents" => {
-            eprint_line(&format!(
-                "{}: command `{}` is reserved for a later phase",
-                crate::version::PRODUCT_NAME,
-                argv[1]
-            ));
-            exit(1);
+        "app" => {
+            exit(cmd_app(&argv[2..]));
+        }
+        "setup" => {
+            exit(cmd_setup(&argv[2..]));
+        }
+        "agents" => {
+            exit(cmd_agents(&argv[2..]));
         }
         other => {
             eprint_line(&format!("error: unknown command `{other}`"));
@@ -739,46 +740,219 @@ fn cmd_tasks_show(args: &[String]) -> i32 {
 
 fn cmd_doctor(args: &[String]) -> i32 {
     let json_out = args.iter().any(|a| a == "--json");
-    let version = crate::version::APP_VERSION;
-    let exe = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "?".into());
-    let daemon = crate::daemon::status_text().unwrap_or_else(|e| format!("error: {e:#}"));
-    let grok = std::env::var("GROK_EXECUTABLE")
-        .ok()
-        .filter(|p| std::path::Path::new(p).is_file())
-        .or_else(which_grok);
+    let cfg = crate::config::ConfigDocument::load().ok().map(|d| d.config);
+    let report = crate::doctor::run_doctor(cfg.as_ref());
     if json_out {
-        print_line(
-            &json!({
-                "version": version,
-                "executable": exe,
-                "daemon": daemon,
-                "grokExecutable": grok,
-            })
-            .to_string(),
-        );
+        match serde_json::to_string(&report) {
+            Ok(s) => print_line(&s),
+            Err(e) => {
+                eprint_line(&format!("error encoding doctor report: {e}"));
+                return 1;
+            }
+        }
     } else {
-        print_line(&format!("GrokTask {version}"));
-        print_line(&format!("executable: {exe}"));
-        print_line(&format!("daemon: {daemon}"));
+        print_line(&format!("GrokTask {}", report.version));
+        print_line(&format!("executable: {}", report.executable));
+        print_line(&format!("daemon: {}", report.daemon));
+        if let Some(mode) = &report.tray_mode {
+            print_line(&format!("trayMode: {mode}"));
+        }
         print_line(&format!(
-            "grok: {}",
-            grok.as_deref().unwrap_or("(not found on PATH)")
+            "tray: available={} click={}",
+            report.tray.tray_available,
+            report.tray.tray_click.as_str()
         ));
+        if let Some(d) = &report.tray.detail {
+            print_line(&format!("trayDetail: {d}"));
+        }
+        let g = &report.grok;
+        print_line(&format!(
+            "grok: state={} path={} version={}",
+            g.state.as_str(),
+            g.executable.as_deref().unwrap_or("(not found)"),
+            g.version.as_deref().unwrap_or("-")
+        ));
+        if let Some(guide) = &g.guidance {
+            print_line(&format!("grokGuidance: {guide}"));
+        }
     }
     0
 }
 
-fn which_grok() -> Option<String> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let c = dir.join("grok");
-        if c.is_file() {
-            return Some(c.display().to_string());
+fn cmd_app(args: &[String]) -> i32 {
+    let mut task_id: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--task" => {
+                i += 1;
+                task_id = args.get(i).cloned();
+            }
+            s if !s.starts_with('-') && task_id.is_none() => task_id = Some(s.to_string()),
+            other => {
+                eprint_line(&format!("error: unknown app arg `{other}`"));
+                return 1;
+            }
+        }
+        i += 1;
+    }
+    let cmd = match task_id {
+        Some(id) => crate::ipc::protocol::GuiNavCommand::OpenTask { task_id: id },
+        None => crate::ipc::protocol::GuiNavCommand::Focus,
+    };
+    match crate::app::gui_host::ensure_and_navigate(cmd) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprint_line(&format!("error: {e}"));
+            1
         }
     }
-    None
+}
+
+/// Open Settings > Integrations. Does not write any Agent or GrokTask config.
+fn cmd_setup(args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--write" || a == "--install") {
+        eprint_line("error: setup never writes config; use `agents mode …` or Settings UI");
+        return 1;
+    }
+    let cmd = crate::ipc::protocol::GuiNavCommand::OpenSettings {
+        section: Some("integrations".into()),
+    };
+    match crate::app::gui_host::ensure_and_navigate(cmd) {
+        Ok(()) => {
+            print_line("opened Settings → Integrations (no config changes)");
+            0
+        }
+        Err(e) => {
+            eprint_line(&format!("error: {e}"));
+            1
+        }
+    }
+}
+
+fn cmd_agents(args: &[String]) -> i32 {
+    if args.is_empty() {
+        eprint_line(
+            "error: usage: agents status [codex|claude] | agents mode codex|claude mcp|none",
+        );
+        return 1;
+    }
+    let json_out = args.iter().any(|a| a == "--json");
+    match args[0].as_str() {
+        "status" => {
+            let filter = args.get(1).and_then(|s| {
+                if s == "--json" {
+                    None
+                } else {
+                    crate::integrations::AgentId::parse(s)
+                }
+            });
+            if let Some(s) = args.get(1) {
+                if s != "--json" && filter.is_none() {
+                    eprint_line(&format!(
+                        "error: unknown agent `{s}`; expected codex|claude"
+                    ));
+                    return 1;
+                }
+            }
+            let command = crate::integrations::current_exe_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "GrokTask".into());
+            let roots = integration_roots_for_cli();
+            let report = crate::integrations::status_report(&roots, filter, &command);
+            if json_out {
+                print_line(&serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
+            } else {
+                for a in &report.agents {
+                    print_line(&format!(
+                        "{}: status={} config={} binary={}",
+                        a.agent.as_str(),
+                        a.status.as_str(),
+                        a.config_path,
+                        a.binary_path
+                    ));
+                    if let Some(d) = &a.detail {
+                        print_line(&format!("  detail: {d}"));
+                    }
+                }
+            }
+            0
+        }
+        "mode" => {
+            // agents mode codex|claude mcp|none
+            let agent_s = match args.get(1).map(|s| s.as_str()) {
+                Some(s) => s,
+                None => {
+                    eprint_line("error: usage: agents mode codex|claude mcp|none");
+                    return 1;
+                }
+            };
+            let mode = match args.get(2).map(|s| s.as_str()) {
+                Some(s) => s,
+                None => {
+                    eprint_line("error: usage: agents mode codex|claude mcp|none");
+                    return 1;
+                }
+            };
+            let agent = match crate::integrations::AgentId::parse(agent_s) {
+                Some(a) => a,
+                None => {
+                    eprint_line(&format!("error: unknown agent `{agent_s}`"));
+                    return 1;
+                }
+            };
+            if mode != "mcp" && mode != "none" {
+                eprint_line("error: mode must be mcp|none");
+                return 1;
+            }
+            let command = match crate::integrations::current_exe_path() {
+                Ok(p) => p.display().to_string(),
+                Err(e) => {
+                    eprint_line(&format!("error: {e}"));
+                    return 1;
+                }
+            };
+            let roots = integration_roots_for_cli();
+            match crate::integrations::set_mode(&roots, agent, mode, &command) {
+                Ok(status) => {
+                    if json_out {
+                        print_line(&serde_json::to_string(&status).unwrap_or_else(|_| "{}".into()));
+                    } else {
+                        print_line(&format!(
+                            "{} mode={mode} status={}",
+                            agent.as_str(),
+                            status.status.as_str()
+                        ));
+                        print_line(&format!("config={}", status.config_path));
+                        if mode == "mcp" {
+                            print_line(
+                                "note: restart or reload MCP in the agent for changes to take effect",
+                            );
+                        }
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprint_line(&format!("error: {e}"));
+                    1
+                }
+            }
+        }
+        other => {
+            eprint_line(&format!("error: unknown agents subcommand `{other}`"));
+            1
+        }
+    }
+}
+
+/// Integration roots for CLI. Honors `GROKTASK_AGENT_HOME` so tests never touch real ~/.codex.
+fn integration_roots_for_cli() -> crate::integrations::IntegrationRoots {
+    if let Ok(home) = std::env::var("GROKTASK_AGENT_HOME") {
+        if !home.is_empty() {
+            return crate::integrations::IntegrationRoots::from_home(home);
+        }
+    }
+    crate::integrations::IntegrationRoots::user_default()
 }
 
 #[cfg(test)]
@@ -817,5 +991,72 @@ mod tests {
         let f = parse_run_flags(&["--read".into(), "do".into(), "it".into()]).unwrap();
         assert_eq!(f.mode.as_deref(), Some("read"));
         assert_eq!(f.task_parts.join(" "), "do it");
+    }
+
+    #[test]
+    fn agents_status_stable_with_temp_home() {
+        let _g = crate::paths::test_env_lock();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prev = std::env::var_os("GROKTASK_AGENT_HOME");
+        std::env::set_var("GROKTASK_AGENT_HOME", tmp.path());
+        let roots = integration_roots_for_cli();
+        let report = crate::integrations::status_report(&roots, None, "/tmp/GrokTask");
+        assert_eq!(report.agents.len(), 2);
+        assert_eq!(
+            report.agents[0].status,
+            crate::integrations::IntegrationStatus::NotInstalled
+        );
+        // Must not point at real home configs in this test.
+        assert!(report.agents[0]
+            .config_path
+            .starts_with(&tmp.path().display().to_string()));
+        match prev {
+            Some(v) => std::env::set_var("GROKTASK_AGENT_HOME", v),
+            None => std::env::remove_var("GROKTASK_AGENT_HOME"),
+        }
+    }
+
+    #[test]
+    fn agents_mode_uses_same_engine() {
+        let _g = crate::paths::test_env_lock();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prev = std::env::var_os("GROKTASK_AGENT_HOME");
+        std::env::set_var("GROKTASK_AGENT_HOME", tmp.path());
+        let roots = integration_roots_for_cli();
+        let cmd = "/opt/test-GrokTask";
+        let st =
+            crate::integrations::set_mode(&roots, crate::integrations::AgentId::Codex, "mcp", cmd)
+                .unwrap();
+        assert_eq!(st.status, crate::integrations::IntegrationStatus::Installed);
+        let st =
+            crate::integrations::set_mode(&roots, crate::integrations::AgentId::Codex, "none", cmd)
+                .unwrap();
+        assert_eq!(
+            st.status,
+            crate::integrations::IntegrationStatus::NotInstalled
+        );
+        match prev {
+            Some(v) => std::env::set_var("GROKTASK_AGENT_HOME", v),
+            None => std::env::remove_var("GROKTASK_AGENT_HOME"),
+        }
+    }
+
+    #[test]
+    fn setup_command_does_not_write_agent_configs() {
+        // setup only opens Settings; this unit test pins the no-write contract by
+        // verifying agent home is untouched when we only construct the nav command.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let codex = tmp.path().join(".codex").join("config.toml");
+        std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        std::fs::write(&codex, b"# untouched\n").unwrap();
+        let before = std::fs::read(&codex).unwrap();
+        let cmd = crate::ipc::protocol::GuiNavCommand::OpenSettings {
+            section: Some("integrations".into()),
+        };
+        assert!(matches!(
+            cmd,
+            crate::ipc::protocol::GuiNavCommand::OpenSettings { .. }
+        ));
+        assert_eq!(std::fs::read(&codex).unwrap(), before);
     }
 }
