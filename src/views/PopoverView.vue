@@ -14,6 +14,7 @@ const selectedTaskId = ref("");
 const detail = ref<TaskDetail | null>(null);
 const expansion = ref<ExpansionMap>({});
 const loading = ref(true);
+const error = ref<string | null>(null);
 /** Monotonic token so only the latest loadDetail wins (async race guard). */
 let detailLoadToken = 0;
 
@@ -24,6 +25,7 @@ const modeLabel = computed(() =>
 async function loadDetail(taskId: string) {
   const token = ++detailLoadToken;
   loading.value = true;
+  error.value = null;
   try {
     const next = await fetchTaskDetail(taskId);
     // Drop stale responses if selection changed while awaiting IPC.
@@ -31,6 +33,10 @@ async function loadDetail(taskId: string) {
     detail.value = next;
     // Same disclosure map as full window for this task
     expansion.value = { ...getSharedExpansion(taskId) };
+  } catch (e) {
+    if (token !== detailLoadToken) return;
+    error.value = e instanceof Error ? e.message : String(e);
+    detail.value = null;
   } finally {
     if (token === detailLoadToken) loading.value = false;
   }
@@ -53,24 +59,36 @@ watch(selectedTaskId, (id) => {
 });
 
 onMounted(async () => {
-  tasks.value = await fetchTaskList();
-  // Prefer a running/active task when present; else first list entry.
-  const running = tasks.value.find((t) =>
-    ["running", "starting", "cancelling", "recovering", "interrupted"].includes(
-      t.status,
-    ),
-  );
-  const nextId = running?.taskId ?? tasks.value[0]?.taskId ?? "";
-  if (!nextId) {
+  loading.value = true;
+  error.value = null;
+  try {
+    tasks.value = await fetchTaskList();
+    // Prefer a running/active task when present; else first list entry.
+    const running = tasks.value.find((t) =>
+      [
+        "running",
+        "starting",
+        "cancelling",
+        "recovering",
+        "interrupted",
+      ].includes(t.status),
+    );
+    const nextId = running?.taskId ?? tasks.value[0]?.taskId ?? "";
+    if (!nextId) {
+      loading.value = false;
+      return;
+    }
+    if (selectedTaskId.value === nextId) {
+      // Value unchanged → watcher does not re-fire; load once explicitly.
+      await loadDetail(nextId);
+    } else {
+      // Assignment triggers the watcher exactly once.
+      selectedTaskId.value = nextId;
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+    detail.value = null;
     loading.value = false;
-    return;
-  }
-  if (selectedTaskId.value === nextId) {
-    // Value unchanged → watcher does not re-fire; load once explicitly.
-    await loadDetail(nextId);
-  } else {
-    // Assignment triggers the watcher exactly once.
-    selectedTaskId.value = nextId;
   }
 });
 </script>
@@ -103,6 +121,9 @@ onMounted(async () => {
     </header>
 
     <p v-if="loading" class="hint">加载中…</p>
+    <p v-else-if="error" class="hint error" data-testid="popover-error">
+      {{ error }}
+    </p>
 
     <template v-else-if="detail">
       <TimelineView
@@ -173,6 +194,9 @@ onMounted(async () => {
   padding: 12px;
   color: var(--subtle);
   font-size: 13px;
+}
+.hint.error {
+  color: #b91c1c;
 }
 .empty-state {
   flex: 1;

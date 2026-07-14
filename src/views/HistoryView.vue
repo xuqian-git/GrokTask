@@ -5,6 +5,7 @@ import type { TaskListItem } from "@/lib/types";
 
 const tasks = ref<TaskListItem[]>([]);
 const loading = ref(true);
+const error = ref<string | null>(null);
 const query = ref("");
 const statusFilter = ref<string>("all");
 const modeFilter = ref<string>("all");
@@ -54,8 +55,16 @@ const filtered = computed(() => {
 });
 
 onMounted(async () => {
-  tasks.value = await fetchTaskList();
-  loading.value = false;
+  loading.value = true;
+  error.value = null;
+  try {
+    tasks.value = await fetchTaskList();
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+    tasks.value = [];
+  } finally {
+    loading.value = false;
+  }
 });
 </script>
 
@@ -87,6 +96,9 @@ onMounted(async () => {
     </header>
 
     <p v-if="loading" class="hint">加载中…</p>
+    <p v-else-if="error" class="hint error" data-testid="history-error">
+      {{ error }}
+    </p>
     <ul v-else class="task-list">
       <li
         v-for="t in filtered"
@@ -192,5 +204,8 @@ onMounted(async () => {
 .hint {
   color: var(--subtle);
   font-size: 13px;
+}
+.hint.error {
+  color: #b91c1c;
 }
 </style>

@@ -11,6 +11,17 @@
     "core:window:allow-set-focus",
     "core:window:allow-set-size",
     "core:window:allow-set-position",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "allow-settings-get",
+    "allow-settings-set-tray-mode",
+    "allow-agents-status",
+    "allow-agents-install",
+    "allow-agents-remove",
+    "allow-doctor-report",
+    "allow-grok-cli-status",
+    "allow-daemon-status-text",
+    "allow-daemon-restart",
+    "allow-tasks-list",
+    "allow-tasks-show"
   ]
 }

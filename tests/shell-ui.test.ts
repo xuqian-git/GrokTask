@@ -38,6 +38,79 @@ describe("conversation shell layouts", () => {
     w.unmount();
   });
 
+  it("TaskView surfaces list load errors and clears loading", async () => {
+    resetUiStateForTests();
+    vi.spyOn(ipc, "fetchTaskList").mockRejectedValue(
+      new Error("tasks_list not allowed. Command not found"),
+    );
+
+    const w = mount(TaskView, {
+      attachTo: document.body,
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    await w.vm.$nextTick();
+
+    expect(w.text()).not.toContain("加载任务…");
+    const err = w.find('[data-testid="task-error"]');
+    expect(err.exists()).toBe(true);
+    expect(err.text()).toContain("tasks_list not allowed");
+    expect(w.find('[data-testid="task-header"]').exists()).toBe(false);
+
+    w.unmount();
+  });
+
+  it("TaskView selects first list item and loads its detail", async () => {
+    resetUiStateForTests();
+    const list: TaskListItem[] = [
+      {
+        taskId: "task-real-1",
+        title: "Real task one",
+        cwd: "/tmp/a",
+        mode: "read",
+        status: "idle",
+        actualModel: "grok-4",
+        createdAt: "2026-07-15T00:00:00.000Z",
+        updatedAt: "2026-07-15T00:01:00.000Z",
+      },
+      {
+        taskId: "task-real-2",
+        title: "Real task two",
+        cwd: "/tmp/b",
+        mode: "write",
+        status: "running",
+        actualModel: "grok-4",
+        createdAt: "2026-07-15T00:02:00.000Z",
+        updatedAt: "2026-07-15T00:03:00.000Z",
+      },
+    ];
+    const listSpy = vi.spyOn(ipc, "fetchTaskList").mockResolvedValue(list);
+    const detailSpy = vi
+      .spyOn(ipc, "fetchTaskDetail")
+      .mockImplementation(async (taskId?: string) => {
+        const d = mockTaskDetail();
+        const id = taskId ?? "task-real-1";
+        d.task.taskId = id;
+        d.title = id === "task-real-1" ? "Real task one" : "Real task two";
+        return d;
+      });
+
+    const w = mount(TaskView, {
+      attachTo: document.body,
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    await w.vm.$nextTick();
+
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(detailSpy).toHaveBeenCalledWith("task-real-1");
+    expect(w.find('[data-testid="task-title"]').text()).toContain(
+      "Real task one",
+    );
+    expect(w.text()).not.toContain("加载任务…");
+    expect(w.find('[data-testid="task-error"]').exists()).toBe(false);
+
+    w.unmount();
+  });
+
   it("PopoverView uses compact timeline + plan + composer without sidebar", async () => {
     resetUiStateForTests();
     const w = mount(PopoverView, {

@@ -54,17 +54,26 @@ watch(selectedTaskId, (id) => {
 });
 
 onMounted(async () => {
-  tasks.value = await fetchTaskList();
-  // Prefer first real task; never force a demo id when the list is empty.
-  const nextId = tasks.value[0]?.taskId ?? "";
-  if (!nextId) {
+  loading.value = true;
+  error.value = null;
+  try {
+    tasks.value = await fetchTaskList();
+    // Prefer first real task; never force a demo id when the list is empty.
+    const nextId = tasks.value[0]?.taskId ?? "";
+    if (!nextId) {
+      loading.value = false;
+      return;
+    }
+    if (selectedTaskId.value === nextId) {
+      await loadDetail(nextId);
+    } else {
+      // Assignment triggers the watcher → loadDetail (with its own try/finally).
+      selectedTaskId.value = nextId;
+    }
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+    detail.value = null;
     loading.value = false;
-    return;
-  }
-  if (selectedTaskId.value === nextId) {
-    await loadDetail(nextId);
-  } else {
-    selectedTaskId.value = nextId;
   }
 });
 </script>
@@ -104,7 +113,7 @@ onMounted(async () => {
       </header>
 
       <p v-if="loading" class="hint">加载任务…</p>
-      <p v-else-if="error" class="hint error">
+      <p v-else-if="error" class="hint error" data-testid="task-error">
         {{ error }}
       </p>
       <p
