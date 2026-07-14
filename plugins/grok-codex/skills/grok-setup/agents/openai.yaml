@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grok Setup"
+  short_description: "Check whether Grok Build is ready"
+  default_prompt: "Use $grok-setup to check whether Grok Build is installed and authenticated."

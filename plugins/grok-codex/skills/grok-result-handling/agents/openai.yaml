@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grok Result Handling"
+  short_description: "Present Grok task and review results"
+  default_prompt: "Use $grok-result-handling to present this Grok result without changing its evidence."
