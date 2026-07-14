@@ -160,13 +160,15 @@ export function renderMarkdown(source: string): string {
       const headers = splitTableRow(line);
       i += 2; // skip separator
       const bodyRows: string[][] = [];
-      while (i < lines.length && lines[i].includes("|") && lines[i].trim() !== "") {
+      while (
+        i < lines.length &&
+        lines[i].includes("|") &&
+        lines[i].trim() !== ""
+      ) {
         bodyRows.push(splitTableRow(lines[i]));
         i += 1;
       }
-      const thead = headers
-        .map((h) => `<th>${renderInline(h)}</th>`)
-        .join("");
+      const thead = headers.map((h) => `<th>${renderInline(h)}</th>`).join("");
       const tbody = bodyRows
         .map((cells) => {
           const tds = headers

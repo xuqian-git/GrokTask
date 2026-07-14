@@ -7,14 +7,16 @@ import { isUnsafePrimaryUiText } from "./markdown";
 import type { TimelineEvent } from "./types";
 
 export type ToolVisualStatus =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "unknown";
+  "pending" | "running" | "completed" | "failed" | "cancelled" | "unknown";
 
-const LIGHTWEIGHT_KINDS = new Set(["read", "search", "explore", "grep", "glob", "list"]);
+const LIGHTWEIGHT_KINDS = new Set([
+  "read",
+  "search",
+  "explore",
+  "grep",
+  "glob",
+  "list",
+]);
 
 export function normalizeToolKind(kind?: string): string {
   return (kind ?? "unknown").toLowerCase().trim();
@@ -42,8 +44,10 @@ export function isAggregateForbiddenKind(kind?: string): boolean {
 export function toolVisualStatus(status?: string): ToolVisualStatus {
   const s = (status ?? "").toLowerCase();
   if (s === "pending" || s === "queued") return "pending";
-  if (s === "running" || s === "in_progress" || s === "in-progress") return "running";
-  if (s === "completed" || s === "success" || s === "ok" || s === "done") return "completed";
+  if (s === "running" || s === "in_progress" || s === "in-progress")
+    return "running";
+  if (s === "completed" || s === "success" || s === "ok" || s === "done")
+    return "completed";
   if (s === "failed" || s === "error") return "failed";
   if (s === "cancelled" || s === "canceled") return "cancelled";
   return "unknown";
@@ -115,8 +119,7 @@ export function toolPrimaryLine(ev: TimelineEvent): string {
 
   // Prefer clean human message/title when present (never protocol labels)
   const rawMsg = (ev.message || ev.title || "").trim();
-  const humanMsg =
-    rawMsg && !isUnsafePrimaryUiText(rawMsg) ? rawMsg : "";
+  const humanMsg = rawMsg && !isUnsafePrimaryUiText(rawMsg) ? rawMsg : "";
 
   const target = primaryTarget(ev);
   let tense: "present" | "past" | "failed" = "past";
@@ -166,7 +169,8 @@ export function aggregatePrimaryLine(count: number, kinds: string[]): string {
     const only = [...set][0];
     if (only === "read") noun = "个文件";
     else if (only === "search" || only === "grep") noun = "次搜索";
-    else if (only === "explore" || only === "glob" || only === "list") noun = "个探索";
+    else if (only === "explore" || only === "glob" || only === "list")
+      noun = "个探索";
   } else if ([...set].every((k) => LIGHTWEIGHT_KINDS.has(k))) {
     noun = "个文件";
   }

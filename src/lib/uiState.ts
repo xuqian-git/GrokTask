@@ -67,7 +67,10 @@ export function setSurfaceScroll(
   taskId: string,
   snap: SurfaceScrollState,
 ): void {
-  scrollBySurfaceTask[surfaceKey(surfaceId, taskId)] = { ...snap, anchor: { ...snap.anchor } };
+  scrollBySurfaceTask[surfaceKey(surfaceId, taskId)] = {
+    ...snap,
+    anchor: { ...snap.anchor },
+  };
 }
 
 /** Test helper: clear all in-memory UI state. */

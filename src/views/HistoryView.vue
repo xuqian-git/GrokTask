@@ -69,44 +69,24 @@ onMounted(async () => {
           type="search"
           placeholder="搜索 title / cwd / 结果…"
           data-testid="history-page-search"
-        >
+        />
         <select v-model="statusFilter" data-testid="history-status-filter">
-          <option value="all">
-            全部状态
-          </option>
-          <option value="idle">
-            idle
-          </option>
-          <option value="running">
-            running
-          </option>
-          <option value="failed">
-            failed
-          </option>
-          <option value="cancelled">
-            cancelled
-          </option>
-          <option value="interrupted">
-            interrupted
-          </option>
+          <option value="all">全部状态</option>
+          <option value="idle">idle</option>
+          <option value="running">running</option>
+          <option value="failed">failed</option>
+          <option value="cancelled">cancelled</option>
+          <option value="interrupted">interrupted</option>
         </select>
         <select v-model="modeFilter" data-testid="history-mode-filter">
-          <option value="all">
-            全部模式
-          </option>
-          <option value="read">
-            read
-          </option>
-          <option value="write">
-            write
-          </option>
+          <option value="all">全部模式</option>
+          <option value="read">read</option>
+          <option value="write">write</option>
         </select>
       </div>
     </header>
 
-    <p v-if="loading" class="hint">
-      加载中…
-    </p>
+    <p v-if="loading" class="hint">加载中…</p>
     <ul v-else class="task-list">
       <li
         v-for="t in filtered"
@@ -130,9 +110,7 @@ onMounted(async () => {
         </div>
         <span v-if="t.latestAction" class="action">{{ t.latestAction }}</span>
       </li>
-      <li v-if="!filtered.length" class="hint">
-        无匹配任务
-      </li>
+      <li v-if="!filtered.length" class="hint">无匹配任务</li>
     </ul>
   </section>
 </template>

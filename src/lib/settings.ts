@@ -8,11 +8,7 @@ import { isTauriRuntime } from "./ipc";
 export type TrayMode = "off" | "active" | "always";
 
 export type IntegrationStatus =
-  | "not_installed"
-  | "installed"
-  | "outdated"
-  | "invalid_config"
-  | "unavailable";
+  "not_installed" | "installed" | "outdated" | "invalid_config" | "unavailable";
 
 export type AgentId = "codex" | "claude";
 
@@ -49,11 +45,7 @@ export interface ActionResult {
 
 export interface GrokCliStatus {
   state:
-    | "not_found"
-    | "found"
-    | "logged_in"
-    | "not_logged_in"
-    | "version_unknown";
+    "not_found" | "found" | "logged_in" | "not_logged_in" | "version_unknown";
   executable?: string;
   version?: string;
   guidance?: string;
@@ -106,7 +98,10 @@ let mockAgents: AgentIntegrationStatus[] = [
   },
 ];
 
-async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+async function invokeTauri<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);
 }
@@ -164,7 +159,8 @@ export async function removeAgent(agent: AgentId): Promise<ActionResult> {
     if (target && !target.canRemove) {
       return {
         ok: false,
-        message: target.detail ?? "Cannot remove: config invalid or unavailable",
+        message:
+          target.detail ?? "Cannot remove: config invalid or unavailable",
       };
     }
     mockAgents = mockAgents.map((a) =>

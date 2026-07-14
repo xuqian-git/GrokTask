@@ -1,12 +1,33 @@
-name: ci
+name: release
+
+# Builds unsigned release binaries + SHA-256 checksums.
+# No code signing, notarization, or secret-backed publishing.
 
 on:
-  push:
-    branches: [main, "codex/**"]
-  pull_request:
   workflow_dispatch:
+  push:
+    tags:
+      - "v*"
 
 jobs:
+  resolve-version:
+    name: resolve-version
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(node -p "require('./package.json').version")"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${VERSION}"
+
   frontend:
     name: frontend
     runs-on: ubuntu-22.04
@@ -25,21 +46,30 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/
 
-  rust:
-    name: ${{ matrix.target }}
+  release-binary:
+    name: release-${{ matrix.target }}
+    needs: [resolve-version, frontend]
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-14
             target: aarch64-apple-darwin
+            binary: GrokTask
           - os: macos-14
             target: x86_64-apple-darwin
+            binary: GrokTask
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            binary: GrokTask.exe
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            binary: GrokTask
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -68,55 +98,52 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: release-${{ matrix.target }}
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
 
-      - name: cargo fmt
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-
-      - name: cargo clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
-
-      - name: cargo test
-        if: matrix.target == 'x86_64-unknown-linux-gnu' || startsWith(matrix.os, 'macos')
-        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
-
       - name: cargo build (release + custom-protocol)
         run: cargo build --manifest-path src-tauri/Cargo.toml --release --target ${{ matrix.target }} --features custom-protocol
 
-      - name: Stage CI binary and SHA-256 checksum
+      - name: Stage binary and SHA-256 checksum
         shell: bash
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
         run: |
           set -euo pipefail
-          mkdir -p ci-out
-          if [[ -f "src-tauri/target/${{ matrix.target }}/release/GrokTask.exe" ]]; then
-            SRC="src-tauri/target/${{ matrix.target }}/release/GrokTask.exe"
-            OUT="ci-out/GrokTask-${{ matrix.target }}.exe"
-          else
-            SRC="src-tauri/target/${{ matrix.target }}/release/GrokTask"
-            OUT="ci-out/GrokTask-${{ matrix.target }}"
+          SRC="src-tauri/target/${TARGET}/release/${BINARY}"
+          if [[ ! -f "${SRC}" ]]; then
+            echo "Missing release binary: ${SRC}" >&2
+            exit 1
           fi
-          cp "${SRC}" "${OUT}"
+          mkdir -p release-out
+          # Artifact basename: GrokTask-<version>-<target>[.exe]
+          if [[ "${BINARY}" == *.exe ]]; then
+            OUT_NAME="GrokTask-${VERSION}-${TARGET}.exe"
+          else
+            OUT_NAME="GrokTask-${VERSION}-${TARGET}"
+          fi
+          cp "${SRC}" "release-out/${OUT_NAME}"
           (
-            cd ci-out
-            BASE="$(basename "${OUT}")"
+            cd release-out
             if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "${BASE}" > "${BASE}.sha256"
+              sha256sum "${OUT_NAME}" > "${OUT_NAME}.sha256"
             else
-              shasum -a 256 "${BASE}" > "${BASE}.sha256"
+              shasum -a 256 "${OUT_NAME}" > "${OUT_NAME}.sha256"
             fi
           )
-          ls -la ci-out
-          cat ci-out/*.sha256
+          ls -la release-out
+          cat "release-out/${OUT_NAME}.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ci-binary-${{ matrix.target }}
+          name: GrokTask-${{ needs.resolve-version.outputs.version }}-${{ matrix.target }}
+          path: release-out/*
           if-no-files-found: error
-          path: ci-out/*

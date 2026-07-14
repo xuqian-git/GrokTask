@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "grok-activity": {
-      "command": "node",
-      "args": ["./scripts/grok-activity-server.mjs", "--stdio"],
-      "cwd": "."
-    }
-  }
-}

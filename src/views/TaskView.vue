@@ -5,16 +5,10 @@ import HistorySidebar from "@/components/history/HistorySidebar.vue";
 import ActivePlanBar from "@/components/plan/ActivePlanBar.vue";
 import TimelineView from "@/components/timeline/TimelineView.vue";
 import { fetchTaskDetail, fetchTaskList } from "@/lib/ipc";
-import {
-  getSharedExpansion,
-  replaceSharedExpansionKey,
-} from "@/lib/uiState";
+import { getSharedExpansion, replaceSharedExpansionKey } from "@/lib/uiState";
 import type { ExpansionMap } from "@/lib/expansion";
 import type { TaskDetail, TaskListItem } from "@/lib/types";
-import {
-  mockRunningTaskDetail,
-  mockTaskDetail,
-} from "@/lib/mockData";
+import { mockRunningTaskDetail, mockTaskDetail } from "@/lib/mockData";
 
 const tasks = ref<TaskListItem[]>([]);
 const selectedTaskId = ref<string>("task-demo-1");
@@ -118,9 +112,7 @@ onMounted(async () => {
         </p>
       </header>
 
-      <p v-if="loading" class="hint">
-        加载任务…
-      </p>
+      <p v-if="loading" class="hint">加载任务…</p>
       <p v-else-if="error" class="hint error">
         {{ error }}
       </p>
@@ -132,10 +124,7 @@ onMounted(async () => {
           :last-sequence="detail.lastSequence"
           @update:expansion="onExpansion"
         />
-        <ActivePlanBar
-          v-if="detail.activePlan"
-          :plan="detail.activePlan"
-        />
+        <ActivePlanBar v-if="detail.activePlan" :plan="detail.activePlan" />
         <ComposerPlaceholder :status="detail.task.status" />
       </template>
     </div>

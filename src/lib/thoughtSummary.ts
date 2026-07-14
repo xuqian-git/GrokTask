@@ -88,7 +88,10 @@ function firstCompleteSentence(text: string): string | null {
   return null;
 }
 
-function firstNonEmptyFragment(text: string, maxGraphemes: number): string | null {
+function firstNonEmptyFragment(
+  text: string,
+  maxGraphemes: number,
+): string | null {
   const plain = stripMarkdownLight(text);
   if (!plain) return null;
   const sliced = graphemeSlice(plain, maxGraphemes).trim();

@@ -136,8 +136,7 @@ async function onRemove(agent: AgentId) {
   if (card && !card.canRemove) {
     actionOk.value = false;
     actionMessage.value =
-      card.detail ??
-      "Cannot remove: config is invalid or unavailable.";
+      card.detail ?? "Cannot remove: config is invalid or unavailable.";
     return;
   }
   busyAgent.value = agent;
@@ -209,7 +208,11 @@ watch(section, () => {
 
 <template>
   <section class="settings" data-testid="settings-shell">
-    <nav class="tabs" aria-label="Settings sections" data-testid="settings-tabs">
+    <nav
+      class="tabs"
+      aria-label="Settings sections"
+      data-testid="settings-tabs"
+    >
       <button
         type="button"
         data-testid="tab-general"
@@ -244,9 +247,7 @@ watch(section, () => {
       </button>
     </nav>
 
-    <p v-if="loading" class="hint" data-testid="settings-loading">
-      Loading…
-    </p>
+    <p v-if="loading" class="hint" data-testid="settings-loading">Loading…</p>
 
     <div
       v-if="actionMessage"
@@ -281,7 +282,7 @@ watch(section, () => {
                 :checked="settings.trayMode === opt.value"
                 :disabled="traySaving"
                 @change="onTrayModeChange(opt.value)"
-              >
+              />
               <span>
                 <strong>{{ opt.label }}</strong>
                 <span class="hint">{{ opt.hint }}</span>
@@ -401,7 +402,7 @@ watch(section, () => {
           >
             {{
               card.detail ||
-                "Write actions disabled because the config cannot be safely edited."
+              "Write actions disabled because the config cannot be safely edited."
             }}
           </p>
           <p class="hint reminder" data-testid="agent-reminder">
@@ -446,7 +447,9 @@ watch(section, () => {
               <span v-if="doctor.grok.executable" class="hint mono">{{
                 doctor.grok.executable
               }}</span>
-              <span v-if="doctor.grok.version" class="hint">version {{ doctor.grok.version }}</span>
+              <span v-if="doctor.grok.version" class="hint"
+                >version {{ doctor.grok.version }}</span
+              >
               <span v-if="doctor.grok.guidance" class="hint warn">{{
                 doctor.grok.guidance
               }}</span>
@@ -458,18 +461,18 @@ watch(section, () => {
             <code>grok login</code>
             automatically.
           </p>
-          <button type="button" data-testid="refresh-doctor" @click="refreshAll">
+          <button
+            type="button"
+            data-testid="refresh-doctor"
+            @click="refreshAll"
+          >
             Refresh
           </button>
         </template>
       </div>
 
       <!-- History -->
-      <div
-        v-else
-        class="panel section"
-        data-testid="section-history"
-      >
+      <div v-else class="panel section" data-testid="section-history">
         <h2>History</h2>
         <div class="meta-grid">
           <div>
@@ -479,8 +482,8 @@ watch(section, () => {
           </div>
         </div>
         <p class="hint">
-          Clear-history actions will land when storage retention APIs are exposed
-          safely. No destructive clear is offered in this build.
+          Clear-history actions will land when storage retention APIs are
+          exposed safely. No destructive clear is offered in this build.
         </p>
         <button type="button" disabled data-testid="clear-history-disabled">
           Clear history (unavailable)

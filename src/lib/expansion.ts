@@ -7,7 +7,10 @@ import type { ExpansionState } from "./types";
 
 export type ExpansionMap = Record<string, ExpansionState>;
 
-export function disclosureKey(itemId: string, part: "body" | "details" = "details"): string {
+export function disclosureKey(
+  itemId: string,
+  part: "body" | "details" = "details",
+): string {
   return `item:${itemId}:${part}`;
 }
 

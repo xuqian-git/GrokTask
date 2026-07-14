@@ -62,7 +62,14 @@ const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
   if (!q) return props.tasks;
   return props.tasks.filter((t) => {
-    const hay = [t.title, t.cwd, t.status, t.mode, t.actualModel, t.latestAction]
+    const hay = [
+      t.title,
+      t.cwd,
+      t.status,
+      t.mode,
+      t.actualModel,
+      t.latestAction,
+    ]
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
@@ -85,7 +92,11 @@ function dayLabel(iso: string): string {
   try {
     const d = new Date(iso);
     const now = new Date();
-    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startToday = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
     const startThat = new Date(d.getFullYear(), d.getMonth(), d.getDate());
     const diff = (startToday.getTime() - startThat.getTime()) / 86400000;
     if (diff === 0) return "今天";
@@ -122,7 +133,7 @@ function dayLabel(iso: string): string {
         class="search"
         placeholder="搜索任务…"
         data-testid="history-search"
-      >
+      />
       <div class="task-groups">
         <section v-for="[day, items] in groups" :key="day" class="day-group">
           <h3 class="day-label">
@@ -160,9 +171,7 @@ function dayLabel(iso: string): string {
             </li>
           </ul>
         </section>
-        <p v-if="!filtered.length" class="empty">
-          无匹配任务
-        </p>
+        <p v-if="!filtered.length" class="empty">无匹配任务</p>
       </div>
     </div>
     <button

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Grok Adversarial Review"
-  short_description: "Run a skeptical read-only Grok review"
-  default_prompt: "Use $grok-adversarial-review to challenge this branch for correctness and security issues."

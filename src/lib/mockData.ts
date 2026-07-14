@@ -132,9 +132,17 @@ export function mockTaskDetail(): TaskDetail {
       itemId: "plan:t1:1",
       currentStep: "Draft reducer rules",
       entries: [
-        { content: "Inspect event order", status: "completed", priority: "high" },
+        {
+          content: "Inspect event order",
+          status: "completed",
+          priority: "high",
+        },
         { content: "Draft reducer rules", status: "running", priority: "high" },
-        { content: "Write acceptance tests", status: "pending", priority: "medium" },
+        {
+          content: "Write acceptance tests",
+          status: "pending",
+          priority: "medium",
+        },
       ],
     },
     lastSequence: 8,
@@ -160,7 +168,7 @@ export function mockTaskList(): TaskListItem[] {
     {
       taskId: "task-demo-2",
       title: "Refactor ACP UI",
-      cwd: "/Users/qian/Documents/grok-plugin-codex",
+      cwd: "/tmp/fixture-workspace",
       mode: "write",
       status: "running",
       actualModel: "grok-4",
@@ -201,7 +209,7 @@ export function mockRunningTaskDetail(): TaskDetail {
       updatedAt: "2026-07-15T08:12:00.000Z",
     },
     title: "Refactor ACP UI",
-    cwd: "/Users/qian/Documents/grok-plugin-codex",
+    cwd: "/tmp/fixture-workspace",
     timeline: [
       {
         itemId: "seg:t2:0:user",

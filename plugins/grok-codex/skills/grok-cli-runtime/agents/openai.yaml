@@ -1,4 +1,0 @@
-interface:
-  display_name: "Grok CLI Runtime"
-  short_description: "Route Grok tasks through activity or CLI"
-  default_prompt: "Use $grok-cli-runtime to run a Grok Build task with live activity when available."

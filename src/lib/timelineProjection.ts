@@ -15,10 +15,7 @@ import type { TimelineEvent } from "./types";
 
 export const AGGREGATE_MAX_MEMBERS = 100;
 
-export type RenderRowKind =
-  | "event"
-  | "aggregate"
-  | "aggregate_member";
+export type RenderRowKind = "event" | "aggregate" | "aggregate_member";
 
 export interface TimelineRenderRow {
   /** Stable key for v-for / virtual list. */

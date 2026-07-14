@@ -8,10 +8,7 @@ import {
   toggleUserExpansion,
 } from "@/lib/expansion";
 import type { ExpansionMap } from "@/lib/expansion";
-import {
-  thoughtPreviewLines,
-  thoughtStageSummary,
-} from "@/lib/thoughtSummary";
+import { thoughtPreviewLines, thoughtStageSummary } from "@/lib/thoughtSummary";
 import {
   toolDetailPaths,
   toolDetailText,
@@ -36,7 +33,9 @@ const emit = defineEmits<{
 }>();
 
 const part = computed(() =>
-  props.event.kind === "user_message" ? ("body" as const) : ("details" as const),
+  props.event.kind === "user_message"
+    ? ("body" as const)
+    : ("details" as const),
 );
 
 const state = computed(() =>
@@ -84,10 +83,7 @@ const toolLine = computed(() => {
 
 const permissionLine = computed(() => {
   if (props.event.kind !== "permission_request") return "";
-  return safeDisplayLine(
-    props.event.message || props.event.title,
-    "权限请求",
-  );
+  return safeDisplayLine(props.event.message || props.event.title, "权限请求");
 });
 
 const planLine = computed(() => {
@@ -101,10 +97,7 @@ const planLine = computed(() => {
 
 const noticeLine = computed(() => {
   if (props.event.kind !== "context_notice") return "";
-  return safeDisplayLine(
-    props.event.message || props.event.text,
-    "状态提示",
-  );
+  return safeDisplayLine(props.event.message || props.event.text, "状态提示");
 });
 
 const primaryLine = computed(() => {
@@ -139,7 +132,10 @@ const bodyHtml = computed(() => {
   if (props.event.kind === "assistant_segment" && props.event.streaming) {
     return escapeText(props.event.text);
   }
-  if (props.event.kind === "reasoning_segment" && reasoningMode.value === "full") {
+  if (
+    props.event.kind === "reasoning_segment" &&
+    reasoningMode.value === "full"
+  ) {
     return renderMarkdown(props.event.text);
   }
   if (
@@ -237,7 +233,12 @@ const disclosurePartKey = computed(() =>
         <span class="tl-message" data-testid="thought-title">{{
           reasoningTitle
         }}</span>
-        <span v-if="event.streaming" class="tl-stream" data-testid="thought-streaming">streaming</span>
+        <span
+          v-if="event.streaming"
+          class="tl-stream"
+          data-testid="thought-streaming"
+          >streaming</span
+        >
         <button
           type="button"
           class="tl-toggle"
@@ -262,11 +263,7 @@ const disclosurePartKey = computed(() =>
         data-testid="thought-body"
         v-html="bodyHtml"
       />
-      <p
-        v-else
-        class="tl-thought-summary"
-        data-testid="thought-summary"
-      >
+      <p v-else class="tl-thought-summary" data-testid="thought-summary">
         {{ reasoningTitle }}
       </p>
     </template>
@@ -281,7 +278,8 @@ const disclosurePartKey = computed(() =>
         <span
           v-if="toolStatus === 'running' || toolStatus === 'pending'"
           class="tl-stream"
-        >{{ toolStatus }}</span>
+          >{{ toolStatus }}</span
+        >
         <button
           type="button"
           class="tl-toggle"
@@ -298,7 +296,8 @@ const disclosurePartKey = computed(() =>
             v-for="p in toolDetailPaths(event)"
             :key="p"
             class="path-chip"
-          >{{ p }}</span>
+            >{{ p }}</span
+          >
         </p>
         <pre v-if="toolDetailText(event)">{{ toolDetailText(event) }}</pre>
         <p v-else-if="!toolDetailPaths(event).length" class="tl-empty-detail">
@@ -312,7 +311,9 @@ const disclosurePartKey = computed(() =>
       <header class="tl-head reply-head">
         <span class="tl-role">Grok</span>
         <span v-if="event.streaming" class="tl-stream">streaming</span>
-        <span v-if="isFinal" class="tl-badge" data-testid="final-badge">final</span>
+        <span v-if="isFinal" class="tl-badge" data-testid="final-badge"
+          >final</span
+        >
         <span v-if="isPartial" class="tl-badge partial">partial</span>
       </header>
       <!-- eslint-disable-next-line vue/no-v-html -->
@@ -345,7 +346,12 @@ const disclosurePartKey = computed(() =>
       <header class="tl-head" @click="onToggle">
         <span class="tl-icon" aria-hidden="true">📋</span>
         <span class="tl-message">{{ planLine }}</span>
-        <button type="button" class="tl-toggle" :aria-expanded="expanded" @click.stop="onToggle">
+        <button
+          type="button"
+          class="tl-toggle"
+          :aria-expanded="expanded"
+          @click.stop="onToggle"
+        >
           {{ expanded ? "收起" : "展开" }}
         </button>
       </header>

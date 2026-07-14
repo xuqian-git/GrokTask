@@ -4,10 +4,7 @@ import ComposerPlaceholder from "@/components/composer/ComposerPlaceholder.vue";
 import ActivePlanBar from "@/components/plan/ActivePlanBar.vue";
 import TimelineView from "@/components/timeline/TimelineView.vue";
 import { fetchTaskDetail, fetchTaskList } from "@/lib/ipc";
-import {
-  getSharedExpansion,
-  replaceSharedExpansionKey,
-} from "@/lib/uiState";
+import { getSharedExpansion, replaceSharedExpansionKey } from "@/lib/uiState";
 import type { ExpansionMap } from "@/lib/expansion";
 import type { TaskDetail, TaskListItem } from "@/lib/types";
 import { mockRunningTaskDetail } from "@/lib/mockData";
@@ -69,8 +66,7 @@ onMounted(async () => {
       t.status,
     ),
   );
-  const nextId =
-    running?.taskId ?? tasks.value[0]?.taskId ?? "task-demo-1";
+  const nextId = running?.taskId ?? tasks.value[0]?.taskId ?? "task-demo-1";
   if (selectedTaskId.value === nextId) {
     // Value unchanged → watcher does not re-fire; load once explicitly.
     await loadDetail(nextId);
@@ -108,9 +104,7 @@ onMounted(async () => {
       </select>
     </header>
 
-    <p v-if="loading" class="hint">
-      加载中…
-    </p>
+    <p v-if="loading" class="hint">加载中…</p>
 
     <template v-else-if="detail">
       <TimelineView
@@ -130,9 +124,7 @@ onMounted(async () => {
 
     <div v-else class="hint empty-state" data-testid="popover-empty">
       <p>暂无活动任务</p>
-      <p class="sub">
-        打开历史或设置继续
-      </p>
+      <p class="sub">打开历史或设置继续</p>
     </div>
   </section>
 </template>

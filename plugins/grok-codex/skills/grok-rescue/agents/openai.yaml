@@ -1,4 +1,0 @@
-interface:
-  display_name: "Grok Rescue"
-  short_description: "Delegate coding work with live Grok progress"
-  default_prompt: "Use $grok-rescue to delegate this coding task and show live Grok progress."

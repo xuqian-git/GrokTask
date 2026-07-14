@@ -1,4 +1,0 @@
-interface:
-  display_name: "Grok Prompting"
-  short_description: "Shape reliable one-shot Grok tasks"
-  default_prompt: "Use $grok-prompting to turn this request into a precise Grok delegation prompt."

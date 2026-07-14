@@ -70,7 +70,9 @@ function stepIcon(status?: string): string {
       <span class="plan-current" data-testid="plan-current">{{
         currentLabel
       }}</span>
-      <span class="plan-count" data-testid="plan-count">{{ completed }}/{{ total }}</span>
+      <span class="plan-count" data-testid="plan-count"
+        >{{ completed }}/{{ total }}</span
+      >
     </header>
     <ol class="plan-steps" data-testid="plan-steps">
       <li

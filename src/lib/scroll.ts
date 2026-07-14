@@ -39,7 +39,10 @@ export interface ScrollController {
    * Notify that new timeline content arrived while possibly detached.
    * Increments unread when detached; no-op when following.
    */
-  notifyContentGrowth(opts?: { newItemCount?: number; lastSequence?: number }): void;
+  notifyContentGrowth(opts?: {
+    newItemCount?: number;
+    lastSequence?: number;
+  }): void;
   /** Explicit jump-to-latest. Clears unread. */
   jumpToLatest(el: HTMLElement): void;
   /** Snapshot for surface restore (popover hide/show). */
@@ -95,7 +98,10 @@ export function createScrollController(
     },
     notifyContentGrowth(opts = {}) {
       if (typeof opts.lastSequence === "number") {
-        ctrl.lastSeenSequence = Math.max(ctrl.lastSeenSequence, opts.lastSequence);
+        ctrl.lastSeenSequence = Math.max(
+          ctrl.lastSeenSequence,
+          opts.lastSequence,
+        );
       }
       if (ctrl.state === "detached-by-user") {
         const n = opts.newItemCount ?? 1;

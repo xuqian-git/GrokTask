@@ -65,11 +65,7 @@ function submit() {
 </script>
 
 <template>
-  <footer
-    class="composer"
-    :class="{ compact }"
-    data-testid="composer"
-  >
+  <footer class="composer" :class="{ compact }" data-testid="composer">
     <p v-if="statusHint" class="status-hint" data-testid="composer-status">
       {{ statusHint }}
     </p>
@@ -98,7 +94,11 @@ function submit() {
           完整窗口
         </button>
         <button
-          v-if="status === 'running' || status === 'starting' || status === 'cancelling'"
+          v-if="
+            status === 'running' ||
+            status === 'starting' ||
+            status === 'cancelling'
+          "
           type="button"
           class="btn ghost"
           data-testid="composer-cancel"
