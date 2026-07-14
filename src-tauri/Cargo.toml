@@ -1,0 +1,82 @@
+[package]
+name = "groktask"
+version = "0.1.0"
+description = "GrokTask — local Grok task runner with MCP, CLI, and native desktop UI"
+authors = ["xAI"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77.2"
+default-run = "GrokTask"
+
+[[bin]]
+name = "GrokTask"
+path = "src/main.rs"
+
+[features]
+# Production builds must enable custom-protocol so Tauri embeds frontend assets
+# instead of connecting to the Vite dev server (which would produce a blank window).
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "5"
+anyhow = "1"
+thiserror = "1"
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "net",
+  "io-util",
+  "io-std",
+  "process",
+  "fs",
+  "signal",
+] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+notify = "8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1"
+futures = "0.3"
+parking_lot = "0.12"
+dashmap = "6"
+fs2 = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+  "Win32_System_Pipes",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+] }
+
+[profile.release]
+opt-level = "z"
+codegen-units = 16
+incremental = true
+strip = true
+panic = "abort"
