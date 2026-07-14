@@ -1,11 +1,12 @@
 {
   "name": "grok-plugin-codex",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Codex plugin for delegating coding and review tasks to Grok Build",
   "type": "module",
   "scripts": {
-    "test": "node --test test/grok-companion.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "activity:dev": "node plugins/grok-codex/scripts/start-grok-activity-dev.mjs"
   },
   "engines": {
     "node": ">=18"

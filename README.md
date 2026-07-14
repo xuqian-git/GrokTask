@@ -2,15 +2,15 @@
 
 `grok-codex` is a Codex plugin that delegates substantial coding work and
 read-only code reviews to [Grok Build](https://x.ai/cli). It packages focused
-Codex skills, a dependency-free Node.js companion runtime, and an optional
-stop-time review gate.
+Codex skills, a dependency-free Node.js companion runtime, a live local
+activity dashboard, and an optional stop-time review gate.
 
 ## Features
 
 | Skill | Purpose |
 | --- | --- |
 | `$grok-setup` | Check the Grok binary and local authentication state. |
-| `$grok-rescue` | Delegate implementation, debugging, or diagnosis to Grok. |
+| `$grok-rescue` | Delegate implementation, debugging, or diagnosis with live activity progress. |
 | `$grok-review` | Review the working tree or a branch without letting Grok edit files. |
 | `$grok-adversarial-review` | Run a skeptical review focused on correctness, security, and edge cases. |
 
@@ -29,6 +29,11 @@ routing.
 Delegation sends the task and any repository content Grok reads to xAI. A
 write-capable rescue run uses Grok's `--always-approve` mode and may modify the
 current workspace.
+
+The local activity dashboard runs Grok through its ACP stdio interface and displays
+the complete local activity stream: lifecycle phases, plans, raw thought chunks,
+tool parameters and results, observed changed paths, usage, and Grok's answer.
+Events are size-bounded and known credential patterns are redacted from diagnostics.
 
 ## Install
 
@@ -54,6 +59,7 @@ discovered.
 ```text
 Use $grok-setup to check my Grok installation.
 Use $grok-rescue to fix the failing auth tests in apps/api.
+Use $grok-rescue to investigate this issue and show live Grok progress.
 Use $grok-rescue with --read to diagnose the rendering jitter without edits.
 Use $grok-review to review my working tree.
 Use $grok-adversarial-review with --base main to challenge this branch.
@@ -63,7 +69,7 @@ Rescue routing flags:
 
 | Flag | Effect |
 | --- | --- |
-| `--read` | Run Grok in read-only plan mode. |
+| `--read` | Run Activity tasks in a non-interactive read-only sandbox. |
 | `--background` | Detach the run and return a PID and log path. |
 | `--effort <level>` | Set Grok reasoning effort. |
 | `--model <id>` | Select a Grok model. |
@@ -77,6 +83,27 @@ Review routing flags include `--base <ref>`, `--scope
 auto|working-tree|branch`, `--wait`, `--background`, `--effort`, `--model`, and
 `--cwd`. Reviews always use Grok plan mode and receive a captured Git diff;
 they cannot edit the repository.
+
+## Live activity
+
+Ordinary `$grok-rescue` runs prefer the bundled `grok-activity` MCP server.
+Codex starts an asynchronous job and receives a secret localhost dashboard
+URL. The Grok skills open or reuse that URL in the Codex in-app Browser when
+the Browser capability is available, while a separate bounded tool lets Codex
+wait for and review the final result in the same turn. The page follows the
+latest job and does not depend on MCP Apps rendering, a Developer App, or a
+Cloudflare Tunnel.
+
+For standalone local development, start the HTTP server:
+
+```bash
+npm run activity:dev -- --root /absolute/path/to/workspace
+```
+
+The command prints secret localhost MCP and dashboard URLs. Treat them like
+credentials and keep the process running while testing. The HTTP server binds
+to `127.0.0.1`, restricts jobs to the selected root, and rejects requests
+without the random secret path.
 
 ## Optional stop review gate
 
@@ -104,9 +131,14 @@ The runtime tests use a fake Grok executable and never contact xAI.
 ```text
 .agents/plugins/marketplace.json
 plugins/grok-codex/
+  .mcp.json
   .codex-plugin/plugin.json
   hooks/hooks.json
+  public/grok-activity.html
+  scripts/grok-activity-core.mjs
+  scripts/grok-activity-server.mjs
   scripts/grok-companion.mjs
+  scripts/start-grok-activity-dev.mjs
   scripts/stop-review-gate.mjs
   skills/*/SKILL.md
 ```

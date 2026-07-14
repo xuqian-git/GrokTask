@@ -1,11 +1,11 @@
 ---
 name: grok-rescue
-description: Delegate a substantial coding, debugging, diagnosis, refactoring, or second-implementation task from Codex to Grok Build. Use when the user explicitly asks to use Grok, or proactively when Codex is stuck and an independent coding-agent pass is valuable. Do not use for trivial work. Grok may read repository content and, unless --read is selected, modify the workspace through an external xAI service.
+description: Delegate a substantial coding, debugging, diagnosis, refactoring, or second-implementation task from Codex to Grok Build with a live local ACP activity dashboard when available. Use when the user explicitly asks to use Grok, wants Grok progress, or when an independent coding-agent pass is valuable. Do not use for trivial work. Grok may read repository content and, unless --read is selected, modify the workspace through an external xAI service.
 ---
 
 # Grok rescue
 
-Act as a thin router to Grok Build. Do not solve the delegated task yourself.
+Route the task to Grok Build. Do not solve the delegated task yourself.
 
 ## Prepare the task
 
@@ -30,7 +30,33 @@ Defaults:
   multi-step work.
 - Leave model and effort unset unless the user specifies them.
 
-## Invoke the companion
+## Start live activity
+
+Prefer the plugin MCP tools when `grok_activity_start` is available:
+
+1. Call `grok_activity_start` exactly once. Pass the prepared prompt, the
+   current workspace as an absolute `cwd`, and `mode: "read"` or `"write"`.
+   Forward `model`, `effort`, and `check` only when requested.
+2. Read the returned `dashboardUrl`. When the Codex in-app Browser capability
+   is available, open or reuse this localhost URL there immediately. Do not
+   launch Chrome or another external browser. The page follows the latest job
+   and displays the full local ACP activity stream, including raw thought and
+   tool payloads. When
+   `browser:control-in-app-browser` is listed, load and follow that skill for
+   the navigation.
+3. Unless the user requested background execution, call `grok_activity_wait`
+   with the returned `jobId`. Repeat bounded waits while the status remains
+   active and the task is still making progress.
+4. Review Grok's public result and workspace changes before claiming success.
+   Report failures as failures; do not replace them with a Codex-generated
+   implementation.
+
+If the user requests `--best-of-n`, `--worktree`, or `--resume`, use the
+companion because those routes are not represented by the activity MCP tool.
+Use the companion as a fallback when the MCP tools are unavailable in the
+current host.
+
+## Companion fallback
 
 Resolve `../../scripts/grok-companion.mjs` relative to this `SKILL.md`. Invoke
 it once, safely quoting every argument and never using `eval`:
@@ -39,6 +65,5 @@ it once, safely quoting every argument and never using `eval`:
 node "<resolved-plugin-root>/scripts/grok-companion.mjs" task <routing-flags> -- "<task>"
 ```
 
-Return the companion output without adding substitute analysis. If invocation
-fails, report the failure and direct the user to `$grok-setup`; do not silently
-complete the task in Codex instead.
+Return companion output without substitute analysis. If invocation fails,
+report the failure and direct the user to `$grok-setup`.

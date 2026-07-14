@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grok Activity</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --text: #202123;
+        --muted: #6f7177;
+        --soft: #f5f5f5;
+        --line: #e7e7e7;
+        --accent: #111111;
+        --ok: #14804a;
+        --warn: #a45c00;
+        --bad: #c0362c;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #181818;
+          --text: #ececec;
+          --muted: #a5a5a5;
+          --soft: #242424;
+          --line: #343434;
+          --accent: #f2f2f2;
+          --ok: #58c78b;
+          --warn: #e5ad58;
+          --bad: #ff8178;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+      body { font: 14px/1.55 Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      button, summary { font: inherit; }
+      .shell { width: min(820px, 100%); margin: 0 auto; padding: 0 22px 56px; }
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 58px;
+        border-bottom: 1px solid var(--line);
+        background: color-mix(in srgb, var(--bg) 92%, transparent);
+        backdrop-filter: blur(14px);
+      }
+      .identity, .controls, .status { display: flex; align-items: center; }
+      .identity { gap: 10px; min-width: 0; }
+      .avatar {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        flex: 0 0 auto;
+        border-radius: 8px;
+        background: var(--accent);
+        color: var(--bg);
+        font-weight: 750;
+      }
+      .name { font-weight: 650; }
+      .status { gap: 7px; color: var(--muted); font-size: 12px; }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+      .status[data-state="running"] .dot, .status[data-state="queued"] .dot { background: var(--warn); animation: pulse 1.4s ease-in-out infinite; }
+      .status[data-state="completed"] .dot { background: var(--ok); }
+      .status[data-state="failed"] .dot { background: var(--bad); }
+      .controls { gap: 12px; flex: 0 0 auto; }
+      .elapsed { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+      .stop {
+        border: 0;
+        border-radius: 8px;
+        padding: 6px 9px;
+        background: transparent;
+        color: var(--bad);
+        cursor: pointer;
+      }
+      .stop:hover:not(:disabled) { background: color-mix(in srgb, var(--bad) 10%, transparent); }
+      .stop:disabled { opacity: .35; cursor: default; }
+      .transcript { padding-top: 26px; }
+      .progress { margin: 0 0 28px 38px; border-left: 1px solid var(--line); padding-left: 18px; }
+      .progress-row { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 9px; align-items: start; padding: 5px 0; color: var(--muted); font-size: 13px; }
+      .progress-mark { width: 6px; height: 6px; margin-top: 7px; margin-left: -22px; border-radius: 50%; background: var(--line); box-shadow: 0 0 0 4px var(--bg); }
+      .stage:last-child > .progress-row .progress-mark { background: var(--muted); }
+      .progress-time { font-size: 11px; font-variant-numeric: tabular-nums; }
+      .empty-progress { color: var(--muted); font-size: 13px; }
+      .stage-events { margin: 1px 0 4px 0; padding: 0 0 0 14px; list-style: none; color: var(--muted); font-size: 12px; }
+      .stage-events li { padding: 2px 0; }
+      .event-card { border-left: 2px solid var(--line); margin: 5px 0; padding: 3px 0 3px 10px; }
+      .event-title { color: var(--text); font-size: 12px; }
+      .stream-text { margin: 5px 0 8px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+      .event-message, .thought-text {
+        max-height: 360px;
+        margin: 7px 0 2px;
+        overflow: auto;
+        border-radius: 7px;
+        padding: 9px 10px;
+        background: var(--soft);
+        color: var(--text);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .thinking { margin: 2px 0 6px 14px; color: var(--muted); }
+      .thinking summary { width: fit-content; cursor: pointer; font-size: 12px; user-select: none; }
+      .thinking-list { margin: 7px 0 0; padding: 0 0 0 12px; list-style: none; font-size: 12px; }
+      .thinking-list li { padding: 5px 0; }
+      .thinking-head { display: flex; justify-content: space-between; gap: 16px; }
+      .thinking-list time { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+      .message { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 12px; align-items: start; }
+      .message-body { min-width: 0; }
+      .message-author { margin: 2px 0 8px; font-weight: 650; }
+      .answer { margin: 0; overflow-wrap: anywhere; color: var(--text); }
+      .answer.placeholder { color: var(--muted); }
+      .answer > :first-child { margin-top: 0; }
+      .answer > :last-child { margin-bottom: 0; }
+      .answer p, .answer ul, .answer ol, .answer blockquote, .answer pre, .answer table { margin: .65em 0; }
+      .answer h1, .answer h2, .answer h3, .answer h4, .answer h5, .answer h6 { margin: 1em 0 .45em; line-height: 1.25; }
+      .answer h1 { font-size: 1.5em; } .answer h2 { font-size: 1.3em; } .answer h3 { font-size: 1.15em; }
+      .answer code { border-radius: 5px; padding: .12em .35em; background: var(--soft); font: .9em ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .answer pre { overflow: auto; border-radius: 8px; padding: 11px 13px; background: var(--soft); }
+      .answer pre code { padding: 0; background: transparent; }
+      .answer blockquote { margin-left: 0; border-left: 3px solid var(--line); padding-left: 12px; color: var(--muted); }
+      .answer a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+      .answer table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      .answer th, .answer td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+      .error { margin: 12px 0 0 40px; color: var(--bad); white-space: pre-wrap; }
+      .details { margin: 28px 0 0 40px; border-top: 1px solid var(--line); padding-top: 14px; color: var(--muted); }
+      .details summary { width: fit-content; cursor: pointer; user-select: none; font-size: 12px; }
+      .detail-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 7px 14px; margin-top: 12px; font-size: 12px; }
+      .detail-grid dt { color: var(--muted); }
+      .detail-grid dd { min-width: 0; margin: 0; color: var(--text); overflow-wrap: anywhere; }
+      .files { margin: 4px 0 0; padding-left: 18px; }
+      .files li { margin: 3px 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+      .notice { margin: 34px 0 0 40px; color: var(--muted); font-size: 12px; }
+      .hidden { display: none !important; }
+      @keyframes pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+      @media (prefers-reduced-motion: reduce) { .dot { animation: none !important; } }
+      @media (max-width: 560px) {
+        .shell { padding-inline: 16px; }
+        .progress, .details, .error, .notice { margin-left: 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="identity">
+          <div class="avatar" aria-hidden="true">G</div>
+          <div>
+            <div class="name">Grok</div>
+            <div class="status" id="status" data-state="queued">
+              <span class="dot" aria-hidden="true"></span>
+              <span class="status-label" id="status-label">等待任务</span>
+            </div>
+          </div>
+        </div>
+        <div class="controls">
+          <span class="elapsed" id="elapsed">00:00</span>
+          <button class="stop" id="stop" type="button" disabled>停止</button>
+        </div>
+      </header>
+
+      <section class="transcript" aria-live="polite">
+        <div class="progress" id="progress">
+          <div class="empty-progress" id="empty-progress">启动 Grok 任务后，完整 ACP 事件会显示在这里。</div>
+        </div>
+
+        <article class="message">
+          <div class="avatar" aria-hidden="true">G</div>
+          <div class="message-body">
+            <div class="message-author">Grok</div>
+            <div class="answer placeholder" id="answer">等待公开答复…</div>
+          </div>
+        </article>
+
+        <div class="error hidden" id="error" role="alert"></div>
+
+        <details class="details" id="details">
+          <summary>运行详情</summary>
+          <dl class="detail-grid">
+            <dt>模式</dt><dd id="mode">—</dd>
+            <dt>目录</dt><dd id="cwd">—</dd>
+            <dt>Token</dt><dd id="usage">—</dd>
+            <dt>Session</dt><dd id="session">—</dd>
+            <dt>文件变化</dt><dd><span id="file-empty">无</span><ul class="files hidden" id="files"></ul></dd>
+          </dl>
+        </details>
+
+        <p class="notice">本机页面展示 ACP 提供的完整活动，包括原始思考、计划、工具参数与结果；内容受事件体积上限约束。</p>
+      </section>
+    </main>
+    <div id="tail" aria-hidden="true"></div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const terminal = new Set(["completed", "failed", "cancelled"]);
+      const labels = { queued: "等待中", running: "运行中", completed: "已完成", failed: "失败", cancelled: "已取消" };
+      const phaseTypes = new Set(["queued", "starting", "analyzing", "responding", "verifying", "completed", "failed", "cancelled"]);
+      const basePath = location.pathname.replace(/\/activity\/?$/, "");
+      const activityApi = `${basePath}/api/activity`;
+      let activity = null;
+      let timer = null;
+      let fetching = false;
+      let autoOpenStageId = null;
+      const manuallyOpenStages = new Set();
+      let followTail = true;
+      let manualScrollUntil = 0;
+
+      function appendInline(parent, source) {
+        const pattern = /(`[^`]+`|\[[^\]]+\]\(https?:\/\/[^)\s]+\)|\*\*[^*]+\*\*|__[^_]+__|\*[^*\n]+\*|_[^_\n]+_)/g;
+        let cursor = 0;
+        for (const match of source.matchAll(pattern)) {
+          parent.append(document.createTextNode(source.slice(cursor, match.index)));
+          const token = match[0];
+          let element;
+          if (token.startsWith("`")) {
+            element = document.createElement("code");
+            element.textContent = token.slice(1, -1);
+          } else if (token.startsWith("[")) {
+            const parts = token.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+            element = document.createElement("a");
+            element.textContent = parts[1];
+            element.href = parts[2];
+            element.target = "_blank";
+            element.rel = "noopener noreferrer";
+          } else if (token.startsWith("**") || token.startsWith("__")) {
+            element = document.createElement("strong");
+            element.textContent = token.slice(2, -2);
+          } else {
+            element = document.createElement("em");
+            element.textContent = token.slice(1, -1);
+          }
+          parent.append(element);
+          cursor = match.index + token.length;
+        }
+        parent.append(document.createTextNode(source.slice(cursor)));
+      }
+
+      function isBlockStart(lines, index) {
+        const line = lines[index] || "";
+        return /^\s*```/.test(line) || /^#{1,6}\s+/.test(line) || /^\s*>\s?/.test(line)
+          || /^\s*[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line) || /^\s*(?:---+|\*\*\*+)\s*$/.test(line)
+          || (index + 1 < lines.length && line.includes("|") && /^\s*\|?\s*:?-{3,}/.test(lines[index + 1]));
+      }
+
+      function renderMarkdown(target, source) {
+        target.replaceChildren();
+        const lines = String(source || "").replace(/\r\n?/g, "\n").split("\n");
+        for (let index = 0; index < lines.length;) {
+          const line = lines[index];
+          if (!line.trim()) { index += 1; continue; }
+          const fence = line.match(/^\s*```([^\s`]*)\s*$/);
+          if (fence) {
+            const code = [];
+            index += 1;
+            while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) code.push(lines[index++]);
+            if (index < lines.length) index += 1;
+            const pre = document.createElement("pre");
+            const node = document.createElement("code");
+            if (fence[1]) node.className = `language-${fence[1].replace(/[^a-z0-9_-]/gi, "")}`;
+            node.textContent = code.join("\n");
+            pre.append(node);
+            target.append(pre);
+            continue;
+          }
+          const heading = line.match(/^(#{1,6})\s+(.+)$/);
+          if (heading) {
+            const node = document.createElement(`h${heading[1].length}`);
+            appendInline(node, heading[2]);
+            target.append(node);
+            index += 1;
+            continue;
+          }
+          if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) {
+            target.append(document.createElement("hr"));
+            index += 1;
+            continue;
+          }
+          if (index + 1 < lines.length && line.includes("|") && /^\s*\|?\s*:?-{3,}/.test(lines[index + 1])) {
+            const split = value => value.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim());
+            const rows = [split(line)];
+            index += 2;
+            while (index < lines.length && lines[index].includes("|") && lines[index].trim()) rows.push(split(lines[index++]));
+            const table = document.createElement("table");
+            const head = document.createElement("thead");
+            const body = document.createElement("tbody");
+            rows.forEach((cells, rowIndex) => {
+              const tr = document.createElement("tr");
+              cells.forEach(cell => {
+                const node = document.createElement(rowIndex ? "td" : "th");
+                appendInline(node, cell);
+                tr.append(node);
+              });
+              (rowIndex ? body : head).append(tr);
+            });
+            table.append(head, body);
+            target.append(table);
+            continue;
+          }
+          if (/^\s*>\s?/.test(line)) {
+            const node = document.createElement("blockquote");
+            const parts = [];
+            while (index < lines.length) {
+              const match = lines[index].match(/^\s*>\s?(.*)$/);
+              if (!match) break;
+              parts.push(match[1]);
+              index += 1;
+            }
+            appendInline(node, parts.join("\n"));
+            target.append(node);
+            continue;
+          }
+          const listMatch = line.match(/^\s*([-*+]|\d+\.)\s+(.+)$/);
+          if (listMatch) {
+            const ordered = /\d+\./.test(listMatch[1]);
+            const list = document.createElement(ordered ? "ol" : "ul");
+            while (index < lines.length) {
+              const match = lines[index].match(/^\s*([-*+]|\d+\.)\s+(.+)$/);
+              if (!match || /\d+\./.test(match[1]) !== ordered) break;
+              const item = document.createElement("li");
+              appendInline(item, match[2]);
+              list.append(item);
+              index += 1;
+            }
+            target.append(list);
+            continue;
+          }
+          const paragraph = [];
+          while (index < lines.length && lines[index].trim() && (paragraph.length === 0 || !isBlockStart(lines, index))) paragraph.push(lines[index++]);
+          const node = document.createElement("p");
+          appendInline(node, paragraph.join("\n"));
+          target.append(node);
+        }
+      }
+
+      function friendlyEventTitle(child) {
+        if (child.type === "acp_notification") {
+          const method = child.details?.method || "";
+          if (method.includes("mcp/servers")) return "正在检查 MCP 服务器";
+          if (method.includes("mcp_initialized")) return "MCP 初始化完成";
+          if (method.includes("settings")) return "Grok 设置已同步";
+          if (method.includes("announcements")) return "收到 Grok 公告";
+          if (method.includes("models")) return "模型信息已更新";
+          if (method.includes("queue")) return "任务队列状态已更新";
+          if (method.includes("prompt_complete")) return "Grok 回合处理完成";
+          if (method.includes("session_notification")) return "Grok 会话消息";
+          if (method.includes("sessions")) return "会话状态已更新";
+          return "Grok 内部状态已更新";
+        }
+        if (child.type === "acp_update") {
+          const update = child.details?.sessionUpdate || "";
+          if (update === "available_commands_update") return "可用命令已加载";
+          if (update === "user_message_chunk") return "任务已提交给 Grok";
+          if (update === "config_option_update") return "会话配置已更新";
+          if (update === "session_info_update") return "会话信息已更新";
+          return "Grok 处理状态已更新";
+        }
+        return child.summary;
+      }
+
+      function readableEventMessage(child) {
+        const output = [];
+        const seen = new Set();
+        const allowed = new Set(["text", "message", "content", "title", "error", "reason"]);
+        const visit = (value, key = "", depth = 0) => {
+          if (output.length >= 3 || depth > 6 || value == null) return;
+          if (typeof value === "string") {
+            if (!allowed.has(key)) return;
+            const text = value.trim().slice(0, 500);
+            if (text && !seen.has(text)) { seen.add(text); output.push(text); }
+            return;
+          }
+          if (Array.isArray(value)) { value.slice(0, 12).forEach(item => visit(item, key, depth + 1)); return; }
+          if (typeof value === "object") Object.entries(value).forEach(([item, nested]) => visit(nested, item, depth + 1));
+        };
+        const details = child.details || {};
+        if (child.type === "plan") visit(details.entries);
+        else if (["tool_call", "acp_update", "acp_notification"].includes(child.type)) visit(details.acp);
+        else if (child.type === "diagnostic") visit(details);
+        return output.join("\n");
+      }
+
+      function duration(ms) {
+        const total = Math.max(0, Math.floor((ms || 0) / 1000));
+        const hours = Math.floor(total / 3600);
+        const minutes = Math.floor((total % 3600) / 60);
+        const seconds = total % 60;
+        return hours
+          ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+          : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+      }
+
+      function elapsed() {
+        if (!activity) return 0;
+        if (terminal.has(activity.status)) return activity.elapsedMs || 0;
+        const start = Date.parse(activity.startedAt);
+        return Number.isFinite(start) ? Date.now() - start : activity.elapsedMs || 0;
+      }
+
+      function groupStages(events) {
+        const groups = [];
+        let current = null;
+        for (const event of events || []) {
+          if (phaseTypes.has(event.type) || !current) {
+            current = { phase: event, events: [], thoughts: [] };
+            groups.push(current);
+          } else if (event.type === "thinking") {
+            current.thoughts.push(event);
+          } else {
+            current.events.push(event);
+          }
+        }
+        return groups;
+      }
+
+      function renderProgress(events, active) {
+        const groups = groupStages(events);
+        const nextAutoStageId = active && groups.length ? String(groups[groups.length - 1].phase.id) : null;
+        autoOpenStageId = nextAutoStageId;
+
+        const rows = groups.map((group) => {
+          const stage = document.createElement("div");
+          stage.className = "stage";
+          const event = group.phase;
+          const row = document.createElement("div");
+          row.className = "progress-row";
+          const mark = document.createElement("span");
+          mark.className = "progress-mark";
+          const text = document.createElement("span");
+          text.textContent = event.summary;
+          const time = document.createElement("time");
+          time.className = "progress-time";
+          const date = new Date(event.at);
+          time.textContent = Number.isNaN(date.valueOf()) ? "" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          row.append(mark, text, time);
+          stage.append(row);
+
+          if (group.events.length) {
+            const list = document.createElement("ul");
+            list.className = "stage-events";
+            list.replaceChildren(...group.events.map((child) => {
+              const item = document.createElement("li");
+              if (child.type === "message_chunk") {
+                const stream = document.createElement("div");
+                stream.className = "stream-text";
+                stream.textContent = child.details?.text || "";
+                item.append(stream);
+                return item;
+              }
+              const card = document.createElement("div");
+              card.className = "event-card";
+              const title = document.createElement("div");
+              title.className = "event-title";
+              title.textContent = friendlyEventTitle(child);
+              card.append(title);
+              const message = readableEventMessage(child);
+              if (message) {
+                const content = document.createElement("pre");
+                content.className = "event-message";
+                content.textContent = message;
+                card.append(content);
+              }
+              item.append(card);
+              return item;
+            }).filter(Boolean));
+            stage.append(list);
+          }
+
+          if (group.thoughts.length) {
+            const details = document.createElement("details");
+            details.className = "thinking";
+            const stageId = String(group.phase.id);
+            details.open = stageId === autoOpenStageId || manuallyOpenStages.has(stageId);
+            const summary = document.createElement("summary");
+            summary.textContent = `思考片段 ${group.thoughts.length}`;
+            const thoughts = document.createElement("ol");
+            thoughts.className = "thinking-list";
+            thoughts.replaceChildren(...group.thoughts.map((thought, index) => {
+              const item = document.createElement("li");
+              const head = document.createElement("div");
+              head.className = "thinking-head";
+              const label = document.createElement("span");
+              label.textContent = thought.summary || `思考片段 ${index + 1}`;
+              const thoughtTime = document.createElement("time");
+              const thoughtDate = new Date(thought.at);
+              thoughtTime.textContent = Number.isNaN(thoughtDate.valueOf()) ? "" : thoughtDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+              head.append(label, thoughtTime);
+              item.append(head);
+              const text = thought.details?.text;
+              if (typeof text === "string" && text) {
+                const content = document.createElement("pre");
+                content.className = "thought-text";
+                content.textContent = text;
+                item.append(content);
+              }
+              return item;
+            }));
+            details.append(summary, thoughts);
+            details.addEventListener("toggle", () => {
+              if (details.open) manuallyOpenStages.add(stageId);
+              else manuallyOpenStages.delete(stageId);
+            });
+            stage.append(details);
+          }
+          return stage;
+        });
+        $("progress").replaceChildren(...rows);
+        if (!rows.length) {
+          const empty = document.createElement("div");
+          empty.className = "empty-progress";
+          empty.textContent = "等待 Grok 启动…";
+          $("progress").append(empty);
+        }
+      }
+
+      function renderFiles(paths) {
+        const files = $("files");
+        files.replaceChildren(...(paths || []).map((path) => {
+          const item = document.createElement("li");
+          item.textContent = path;
+          return item;
+        }));
+        files.classList.toggle("hidden", !paths?.length);
+        $("file-empty").classList.toggle("hidden", Boolean(paths?.length));
+      }
+
+      function render(next) {
+        activity = next;
+        const active = !terminal.has(next.status);
+        $("status").dataset.state = next.status;
+        $("status-label").textContent = labels[next.status] || next.status;
+        $("elapsed").textContent = duration(elapsed());
+        $("stop").disabled = !active || Boolean(next.cancelRequested);
+        $("stop").textContent = next.cancelRequested ? "停止中…" : "停止";
+        renderProgress(next.events, active);
+
+        const output = typeof next.publicText === "string" ? next.publicText : "";
+        const answer = $("answer");
+        if (output) renderMarkdown(answer, output);
+        else answer.textContent = active ? "正在等待 Grok 的公开答复…" : "没有公开输出。";
+        answer.classList.toggle("placeholder", !output);
+
+        $("mode").textContent = next.mode === "write" ? "写入" : "只读";
+        $("cwd").textContent = next.cwd || "—";
+        const total = next.usage?.total_tokens ?? next.usage?.totalTokens;
+        $("usage").textContent = typeof total === "number" ? total.toLocaleString() : "—";
+        $("session").textContent = next.sessionId || "—";
+        renderFiles(next.changedFiles);
+
+        const message = next.error || (next.status === "failed" ? next.diagnostics : "");
+        $("error").textContent = message || "";
+        $("error").classList.toggle("hidden", !message);
+        if (followTail) requestAnimationFrame(() => $("tail").scrollIntoView({ block: "end" }));
+        schedule();
+      }
+
+      function renderWaiting() {
+        activity = null;
+        $("status").dataset.state = "queued";
+        $("status-label").textContent = "等待任务";
+        $("elapsed").textContent = "00:00";
+        $("stop").disabled = true;
+        renderProgress([], false);
+        $("answer").textContent = "等待公开答复…";
+        $("answer").classList.add("placeholder");
+      }
+
+      function schedule() {
+        if (timer) clearTimeout(timer);
+        if (document.hidden) return;
+        timer = setTimeout(refresh, activity && !terminal.has(activity.status) ? 850 : 1500);
+      }
+
+      async function refresh() {
+        if (fetching || document.hidden) return;
+        fetching = true;
+        try {
+          const response = await fetch(`${activityApi}/latest`, { headers: { accept: "application/json" }, cache: "no-store" });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          if (payload.activity) render(payload.activity);
+          else { renderWaiting(); schedule(); }
+          if (!activity?.error) $("error").classList.add("hidden");
+        } catch (error) {
+          $("error").textContent = `刷新失败：${error.message}`;
+          $("error").classList.remove("hidden");
+          schedule();
+        } finally {
+          fetching = false;
+        }
+      }
+
+      $("stop").addEventListener("click", async () => {
+        if (!activity || terminal.has(activity.status) || !confirm("停止这个 Grok 任务？")) return;
+        $("stop").disabled = true;
+        try {
+          const response = await fetch(`${activityApi}/${encodeURIComponent(activity.jobId)}/cancel`, { method: "POST", headers: { accept: "application/json" } });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          if (payload.activity) render(payload.activity);
+        } catch (error) {
+          $("error").textContent = `停止失败：${error.message}`;
+          $("error").classList.remove("hidden");
+          $("stop").disabled = false;
+        }
+      });
+
+      document.addEventListener("visibilitychange", () => document.hidden ? clearTimeout(timer) : refresh());
+      const noteManualScroll = () => { manualScrollUntil = Date.now() + 1200; };
+      window.addEventListener("wheel", noteManualScroll, { passive: true });
+      window.addEventListener("touchmove", noteManualScroll, { passive: true });
+      window.addEventListener("pointerdown", (event) => {
+        if (event.clientX >= window.innerWidth - 24) noteManualScroll();
+      }, { passive: true });
+      window.addEventListener("keydown", (event) => {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) noteManualScroll();
+      });
+      window.addEventListener("scroll", () => {
+        const distance = document.documentElement.scrollHeight - window.innerHeight - window.scrollY;
+        if (distance < 80) followTail = true;
+        else if (Date.now() < manualScrollUntil) followTail = false;
+      }, { passive: true });
+      setInterval(() => { if (activity) $("elapsed").textContent = duration(elapsed()); }, 1000);
+      renderWaiting();
+      refresh();
+    </script>
+  </body>
+</html>
