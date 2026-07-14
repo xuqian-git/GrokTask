@@ -5,12 +5,16 @@ pub mod login_item;
 pub mod tray;
 pub mod windows;
 
-/// Tauri commands exposed to the frontend Settings UI.
+/// Tauri commands exposed to the frontend Settings / Task UI.
 pub mod commands {
     use crate::config::{ConfigDocument, LanguagePref, ThemePref, TrayMode};
     use crate::doctor::{self, DoctorReport, GrokCliStatus};
+    use crate::dto::{TaskDetail, TaskListItem};
     use crate::integrations::{self, AgentId, AgentIntegrationStatus, AgentStatusReport};
+    use crate::ipc::client::{self, unwrap_result};
+    use crate::ipc::protocol::ClientRole;
     use serde::{Deserialize, Serialize};
+    use serde_json::{json, Value};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -182,5 +186,123 @@ pub mod commands {
     pub fn daemon_restart(force: bool) -> Result<String, String> {
         crate::daemon::restart(force).map_err(|e| format!("{e:#}"))?;
         Ok("daemon restart requested".into())
+    }
+
+    /// List recent tasks from the local daemon (starts daemon if needed).
+    #[tauri::command]
+    pub fn tasks_list(limit: Option<i64>) -> Result<Vec<TaskListItem>, String> {
+        let limit = limit.unwrap_or(50);
+        let resp =
+            client::request_blocking(ClientRole::GuiHost, "tasks.list", json!({ "limit": limit }))
+                .map_err(|e| format!("{e:#}"))?;
+        let v = unwrap_result(resp).map_err(|e| format!("{e:#}"))?;
+        decode_tasks_list(v)
+    }
+
+    /// Full task detail + timeline snapshot from the local daemon.
+    #[tauri::command]
+    pub fn tasks_show(task_id: String) -> Result<TaskDetail, String> {
+        let resp = client::request_blocking(
+            ClientRole::GuiHost,
+            "tasks.show",
+            json!({ "taskId": task_id }),
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        let v = unwrap_result(resp).map_err(|e| format!("{e:#}"))?;
+        decode_task_detail(v)
+    }
+
+    /// Pure decode helpers (unit-tested without a live daemon).
+    pub(crate) fn decode_tasks_list(v: Value) -> Result<Vec<TaskListItem>, String> {
+        serde_json::from_value(v).map_err(|e| format!("tasks.list decode: {e}"))
+    }
+
+    pub(crate) fn decode_task_detail(v: Value) -> Result<TaskDetail, String> {
+        serde_json::from_value(v).map_err(|e| format!("tasks.show decode: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::commands::{decode_task_detail, decode_tasks_list};
+    use serde_json::json;
+
+    #[test]
+    fn decode_tasks_list_camel_case_fixture() {
+        let v = json!([
+            {
+                "taskId": "2e79aa9c-09e7-409b-9048-f24890a763f9",
+                "title": "Reply with exactly: hello",
+                "cwd": "/tmp/demo",
+                "mode": "read",
+                "status": "idle",
+                "actualModel": "grok-4",
+                "latestAction": "Replying: hello",
+                "createdAt": "2026-07-15T00:00:00.000Z",
+                "updatedAt": "2026-07-15T00:01:00.000Z",
+                "finishedAt": "2026-07-15T00:01:00.000Z"
+            }
+        ]);
+        let list = decode_tasks_list(v).expect("list decodes");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].task_id, "2e79aa9c-09e7-409b-9048-f24890a763f9");
+        assert_eq!(list[0].title, "Reply with exactly: hello");
+        assert_eq!(list[0].status.as_str(), "idle");
+        assert_eq!(list[0].mode.as_str(), "read");
+    }
+
+    #[test]
+    fn decode_task_detail_camel_case_fixture() {
+        let v = json!({
+            "task": {
+                "taskId": "2e79aa9c-09e7-409b-9048-f24890a763f9",
+                "status": "idle",
+                "mode": "read",
+                "actualModel": "grok-4",
+                "latestAction": "Replying: hello",
+                "answerPreview": "hello",
+                "createdAt": "2026-07-15T00:00:00.000Z",
+                "updatedAt": "2026-07-15T00:01:00.000Z",
+                "finishedAt": "2026-07-15T00:01:00.000Z"
+            },
+            "title": "Reply with exactly: hello",
+            "cwd": "/tmp/demo",
+            "timeline": [
+                {
+                    "itemId": "seg:t1:0:user",
+                    "kind": "user_message",
+                    "message": "Reply with exactly: hello",
+                    "text": "Reply with exactly: hello",
+                    "streaming": false,
+                    "locations": [],
+                    "firstSequence": 1,
+                    "lastSequence": 1
+                },
+                {
+                    "itemId": "seg:t1:1:agent",
+                    "kind": "agent_message_chunk",
+                    "message": "hello",
+                    "text": "hello",
+                    "streaming": false,
+                    "locations": [],
+                    "firstSequence": 2,
+                    "lastSequence": 2
+                }
+            ],
+            "lastSequence": 2,
+            "timelineGeneration": 1
+        });
+        let d = decode_task_detail(v).expect("detail decodes");
+        assert_eq!(d.task.task_id, "2e79aa9c-09e7-409b-9048-f24890a763f9");
+        assert_eq!(d.title, "Reply with exactly: hello");
+        assert_eq!(d.timeline.len(), 2);
+        assert_eq!(d.timeline[1].text, "hello");
+        assert_eq!(d.last_sequence, 2);
+    }
+
+    #[test]
+    fn decode_tasks_list_rejects_invalid_shape() {
+        let err = decode_tasks_list(json!({ "not": "an array" })).unwrap_err();
+        assert!(err.contains("tasks.list decode"), "{err}");
     }
 }

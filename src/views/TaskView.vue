@@ -8,10 +8,10 @@ import { fetchTaskDetail, fetchTaskList } from "@/lib/ipc";
 import { getSharedExpansion, replaceSharedExpansionKey } from "@/lib/uiState";
 import type { ExpansionMap } from "@/lib/expansion";
 import type { TaskDetail, TaskListItem } from "@/lib/types";
-import { mockRunningTaskDetail, mockTaskDetail } from "@/lib/mockData";
 
 const tasks = ref<TaskListItem[]>([]);
-const selectedTaskId = ref<string>("task-demo-1");
+/** Empty until list loads — never force a demo id in real Tauri flows. */
+const selectedTaskId = ref<string>("");
 const detail = ref<TaskDetail | null>(null);
 const expansion = ref<ExpansionMap>({});
 const loading = ref(true);
@@ -23,35 +23,15 @@ const modeLabel = computed(() =>
   (detail.value?.task.mode ?? "read").toUpperCase(),
 );
 
-async function loadList() {
-  tasks.value = await fetchTaskList();
-  if (!tasks.value.find((t) => t.taskId === selectedTaskId.value)) {
-    selectedTaskId.value = tasks.value[0]?.taskId ?? selectedTaskId.value;
-  }
-}
-
 async function loadDetail(taskId: string) {
   loading.value = true;
   error.value = null;
   try {
-    // Prefer mock variants so multi-task sidebar demos work offline
-    if (taskId === "task-demo-2") {
-      detail.value = mockRunningTaskDetail();
-    } else if (taskId === "task-demo-3") {
-      const d = mockTaskDetail();
-      d.task.taskId = taskId;
-      d.task.status = "failed";
-      d.title = "Fix build";
-      d.cwd = "/tmp/other";
-      d.activePlan = undefined;
-      detail.value = d;
-    } else {
-      detail.value = await fetchTaskDetail(taskId);
-      if (detail.value) detail.value.task.taskId = taskId;
-    }
+    detail.value = await fetchTaskDetail(taskId);
     expansion.value = { ...getSharedExpansion(taskId) };
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
+    detail.value = null;
   } finally {
     loading.value = false;
   }
@@ -68,13 +48,24 @@ function onExpansion(map: ExpansionMap) {
   }
 }
 
+// Selection is the single source of truth for detail loads (no mount double-call).
 watch(selectedTaskId, (id) => {
   if (id) void loadDetail(id);
 });
 
 onMounted(async () => {
-  await loadList();
-  await loadDetail(selectedTaskId.value);
+  tasks.value = await fetchTaskList();
+  // Prefer first real task; never force a demo id when the list is empty.
+  const nextId = tasks.value[0]?.taskId ?? "";
+  if (!nextId) {
+    loading.value = false;
+    return;
+  }
+  if (selectedTaskId.value === nextId) {
+    await loadDetail(nextId);
+  } else {
+    selectedTaskId.value = nextId;
+  }
 });
 </script>
 
@@ -115,6 +106,13 @@ onMounted(async () => {
       <p v-if="loading" class="hint">加载任务…</p>
       <p v-else-if="error" class="hint error">
         {{ error }}
+      </p>
+      <p
+        v-else-if="!detail && !selectedTaskId"
+        class="hint"
+        data-testid="task-empty"
+      >
+        暂无任务
       </p>
 
       <template v-else-if="detail">

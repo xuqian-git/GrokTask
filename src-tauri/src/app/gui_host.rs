@@ -156,6 +156,8 @@ fn run_impl(launch: GuiHostLaunch) -> ! {
             commands::grok_cli_status,
             commands::daemon_status_text,
             commands::daemon_restart,
+            commands::tasks_list,
+            commands::tasks_show,
         ])
         .on_window_event(|window, event| {
             // Hide popover on focus loss (click outside); do not cancel tasks.

@@ -7,10 +7,10 @@ import { fetchTaskDetail, fetchTaskList } from "@/lib/ipc";
 import { getSharedExpansion, replaceSharedExpansionKey } from "@/lib/uiState";
 import type { ExpansionMap } from "@/lib/expansion";
 import type { TaskDetail, TaskListItem } from "@/lib/types";
-import { mockRunningTaskDetail } from "@/lib/mockData";
 
 const tasks = ref<TaskListItem[]>([]);
-const selectedTaskId = ref("task-demo-1");
+/** Empty until list loads — never force a demo id in real Tauri flows. */
+const selectedTaskId = ref("");
 const detail = ref<TaskDetail | null>(null);
 const expansion = ref<ExpansionMap>({});
 const loading = ref(true);
@@ -25,13 +25,7 @@ async function loadDetail(taskId: string) {
   const token = ++detailLoadToken;
   loading.value = true;
   try {
-    let next: TaskDetail | null = null;
-    if (taskId === "task-demo-2") {
-      next = mockRunningTaskDetail();
-    } else {
-      next = await fetchTaskDetail(taskId);
-      if (next) next.task.taskId = taskId;
-    }
+    const next = await fetchTaskDetail(taskId);
     // Drop stale responses if selection changed while awaiting IPC.
     if (token !== detailLoadToken) return;
     detail.value = next;
@@ -60,13 +54,17 @@ watch(selectedTaskId, (id) => {
 
 onMounted(async () => {
   tasks.value = await fetchTaskList();
-  // Prefer running task for popover auto selection demo
+  // Prefer a running/active task when present; else first list entry.
   const running = tasks.value.find((t) =>
     ["running", "starting", "cancelling", "recovering", "interrupted"].includes(
       t.status,
     ),
   );
-  const nextId = running?.taskId ?? tasks.value[0]?.taskId ?? "task-demo-1";
+  const nextId = running?.taskId ?? tasks.value[0]?.taskId ?? "";
+  if (!nextId) {
+    loading.value = false;
+    return;
+  }
   if (selectedTaskId.value === nextId) {
     // Value unchanged → watcher does not re-fire; load once explicitly.
     await loadDetail(nextId);
