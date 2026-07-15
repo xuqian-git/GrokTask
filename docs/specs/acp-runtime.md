@@ -49,8 +49,8 @@ grok --no-auto-update <mode args> [--model MODEL] [--reasoning-effort EFFORT] ag
 1. 建立逐行 JSON-RPC transport，注册 notification/request router。
 2. 发送 `initialize`，声明 GrokTask 实际完整支持的 client capabilities。首发不声明 fs 或 terminal capability。
 3. 如果 agent 要求 ACP authentication，按其返回的方法完成已有本地登录态验证；不收集或代理用户凭证。
-4. 新任务调用 `session/new`；恢复任务仅在能力允许时调用 `session/load` 或 `session/resume`。
-5. 保存 `sessionId` 后才发送 `session/prompt`。
+4. 新任务（尚无持久化 `acp_session_id` 的首轮）调用 `session/new`；同一 task 的后续 turn 或恢复必须在能力允许时对**已持久化的同一 id** 调用 `session/load`（禁止 follow-up 静默 `session/new` 替换会话）。`session/resume` 仅在能力存在时才考虑。
+5. 保存 `sessionId` 后才发送 `session/prompt`。load 失败或缺 id 的 genuine follow-up 返回可行动错误并**保留**原 stored id，不得创建替代 session。
 
 本机 Grok 0.2.101 的实测能力：
 
@@ -204,11 +204,11 @@ UI follow-up 满足以下条件才发送：
 
 ACP v1 规定历史 notification 在 `session/load` response 之前到达。实现必须：
 
-1. 先在 router 注册 session 与 staging reducer。
-2. 再发送 `session/load`。
-3. load 期间所有 replay update 进入 staging，不直接追加到当前可见 timeline。
-4. load 成功后，在单个 storage transaction 中用 staging 的规范化历史核对/替换可靠映射的可重放 turn；可靠映射的 item 复用既有稳定 itemId，从而保留用户展开状态。commit 后以 generation reset 通知 GUI 原子 resnapshot，不能逐项闪烁。
-5. load 失败时保留本地历史，session 标记 unavailable，禁止发送 follow-up，并显示错误。
+1. 先在 router 注册 session 与 staging reducer（follow-up 进程冷启动时：initialize 后即可收 notification，再发 load）。
+2. 再发送 `session/load`，`params.sessionId` 必须等于 task 已持久化的 `acp_session_id`。
+3. load 期间所有 replay update 进入 staging / 直接丢弃于 live turn 路径，**不**追加到当前可见 timeline，避免与已持久化历史重复。
+4. 完整 recovery 路径：load 成功后，在单个 storage transaction 中用 staging 的规范化历史核对/替换可靠映射的可重放 turn；可靠映射的 item 复用既有稳定 itemId，从而保留用户展开状态。commit 后以 generation reset 通知 GUI 原子 resnapshot，不能逐项闪烁。MCP/`task.continue` 的 idle follow-up 可仅跳过 replay 入库，再对新 prompt 走 `session/prompt`。
+5. load 失败时保留本地历史与 **stored session id**，session 标记 unavailable，禁止用 `session/new` 顶替，并返回 `session_load_failed`（或同类）可行动错误。
 6. 同一 session 的并发 load 请求合并为一个共享 future。
 
 标准 `messageId/toolCallId` 优先去重；本机 Grok 的 `_meta.isReplay`、eventId、promptId、chunkId 可辅助。不能只按纯文本去重，因为相同文本可能在不同 turn 合法出现。

@@ -121,7 +121,7 @@ LICENSE
 
 - TaskManager、并发上限、per-turn client-owned/daemon-owned 语义、immutable RunResult 与 `(taskId,turnId)` conditional operations。
 - CLI `run/start/status/wait/cancel/tasks/doctor/daemon`。
-- rmcp stdio server 的五个工具与 structuredContent。
+- MCP stdio server 的六个工具（`run` / `start` / `continue` / `status` / `wait` / `cancel`）与 structuredContent。
 - task status/error/result DTO 单源复用。
 - crash startup recovery 与 write-task interrupted 保护。
 

@@ -4,7 +4,7 @@
 
 ## 1. 产品定义
 
-GrokTask 是一个独立、跨平台、单二进制的本地工具。Codex 或 Claude Code 通过 MCP 直接调用它，把已经规划好的编码实现、文件修改、测试补齐或修复落地任务交给 Grok Build；用户通过原生桌面窗口和系统托盘查看真实的执行过程、继续对话或取消任务。
+GrokTask 是一个独立、跨平台、单二进制的本地工具。Codex 或 Claude Code 通过 MCP 直接调用它，默认把仓库/工作区相关工作（编码、调试、CI、review、测试、文档、研究与分析）委派给 Grok Build；主机侧只做意图识别、必要时写短 plan、敏感度把关与轻量终审。用户通过原生桌面窗口和系统托盘查看真实的执行过程、继续对话或取消任务。
 
 GrokTask 不是 Codex 插件，也不依赖浏览器、localhost 页面或 Node.js 插件运行时。
 
@@ -20,17 +20,18 @@ GrokTask 不是 Codex 插件，也不依赖浏览器、localhost 页面或 Node.
 
 ### 3.1 Agent 阻塞调用
 
-1. Codex 或 Claude Code 调用 MCP `run`，显式传入 `mode: read | write`、任务描述和工作目录。
-2. GrokTask daemon 创建任务并启动 Grok ACP 会话。
+1. Codex 或 Claude Code 在首轮（或新对话/新 workspace）调用 MCP `run`，显式传入 `mode: read | write`、任务描述和工作目录。
+2. GrokTask daemon 创建任务并 `session/new` 启动 Grok ACP 会话，持久化 `sessionId`。
 3. MCP 调用持续等待；过程实时写入本地时间线。托盘为 `active/always` 或用户已经打开应用时，浮层和完整窗口同步实时显示；默认 `off` 时任务不会为了展示而主动启动 GUI。
-4. Grok 完成后，MCP 返回最终或明确标注的部分 Markdown 回复和结构化任务元数据。
-5. 调用方继续审查工作区或向用户报告。
+4. Grok 完成后，MCP 返回最终或明确标注的部分 Markdown 回复和结构化任务元数据（含 `taskId`）。
+5. 调用方做轻量终审后向用户报告；同一对话+workspace 的后续请求用 `continue(taskId, prompt)`。
 
 ### 3.2 Agent 异步调用
 
 1. 调用方为一次逻辑提交生成并在 retry 时复用 `submissionId`，使用 `start` 获取 `taskId + turnId`；response 丢失重试不会创建第二个任务。
 2. GrokTask 在 daemon 中继续运行，不依赖发起调用的 stdio 连接存活。
 3. 调用方保存 `taskId + turnId`，用 `status` 或 `wait` 获取进度与该轮最终结果，需要时用 conditional `cancel` 取消该轮。
+4. 后续 follow-up 优先 `continue`（阻塞）或 UI/`task.continue`，复用同一 ACP session。
 
 ### 3.3 用户在浮层中跟进
 
@@ -52,7 +53,9 @@ GrokTask 不是 Codex 插件，也不依赖浏览器、localhost 页面或 Node.
 | 名称与可执行文件 | `GrokTask` |
 | 交付形态 | Tauri 2 单二进制；CLI、MCP、daemon、GUI host 为同一程序的不同角色 |
 | Agent 集成 | Codex 与 Claude Code 的用户级 MCP 配置 |
-| MCP 主入口 | 阻塞 `run`；另有 `start`、`status`、`wait`、`cancel` |
+| MCP 主入口 | 阻塞 `run` / `continue`；另有 `start`、`status`、`wait`、`cancel`（共六个工具） |
+| 会话复用 | 同一主机对话 + workspace 保留 `taskId`；首轮 `session/new`，后续 `session/load` + `session/prompt`；禁止 follow-up 静默 `session/new` |
+| 委派边界 | 默认最大委派工作区工作给 Grok；主机保留用户决策、纯对话、secrets 与需权威的外部副作用，并做轻量终审 |
 | 权限模式 | 每次 `run` / `start` 必须显式传 `read` 或 `write`，不存在隐式默认值 |
 | UI | 只使用原生 Tauri WebView；不提供 localhost 镜像 |
 | 托盘交互 | 左键打开锚定实时对话浮层；右键打开原生菜单 |
@@ -72,7 +75,7 @@ GrokTask 不是 Codex 插件，也不依赖浏览器、localhost 页面或 Node.
 
 - 只允许读取、搜索和 Grok 内建白名单中的只读 Git 命令。
 - 使用 Grok `read-only` sandbox、`dontAsk` permission mode、禁用 WebFetch、编辑和 subagent；不添加可匹配 `git push/reset/clean` 的宽泛 Bash allow rule。
-- 适合读取代码、收集编码上下文，或在调用方已经完成分析后执行只读准备；代码审查、诊断、方案分析和第二意见由 Codex/Claude Code 自己完成。
+- 适合读取代码、收集上下文、只读诊断/review/研究；深度分析也可委派 Grok（`mode: read`）。主机仍做意图与敏感度把关及轻量终审。
 - 如果 Grok 尝试写入，任务应失败并在时间线显示清晰错误，不能静默切换为 write。
 
 ### 5.2 `write`

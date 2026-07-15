@@ -10,7 +10,7 @@ GrokTask is now a standalone desktop application:
 
 | Concern | Current approach |
 | --- | --- |
-| Agent integration | MCP server role: `GrokTask mcp` (tools: `run`, `start`, `status`, `wait`, `cancel`) |
+| Agent integration | MCP server role: `GrokTask mcp` (tools: `run`, `start`, `continue`, `status`, `wait`, `cancel`) |
 | Live Thought → Tool → Reply UI | Native Tauri WebView (menu-bar/tray popover and full window) |
 | Install / remove agent config | Settings → Integrations, or `GrokTask agents mode codex\|claude mcp\|none` |
 | Diagnostics | `GrokTask doctor` |

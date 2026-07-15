@@ -1,4 +1,4 @@
-//! TaskManager: accept/start/run/status/wait/cancel and drive ACP reduce path.
+//! TaskManager: accept/start/run/continue/status/wait/cancel and drive ACP reduce path.
 //!
 //! Real Grok ACP process integration is best-effort: when the CLI is missing or
 //! fixture mode is set, turns still persist durable state and can ingest
@@ -26,7 +26,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Notify;
 
@@ -864,8 +864,18 @@ impl TaskManager {
             let _ = repository::update_turn_status(&conn, turn_id, "running", Some(started));
         }
 
-        let session_id = "fixture-session";
-        let mut reducer = TurnReducer::new(task_id, turn_id, session_id);
+        // Fixture path still needs a real ordinal when present; tests always seed a turn.
+        let turn_ordinal = self
+            .turn_ordinal(task_id, turn_id)
+            .expect("fixture turn row must exist for ordinal");
+        let session_id = "fixture-session".to_string();
+        if let Ok(conn) = self.open() {
+            let _ = conn.execute(
+                "UPDATE tasks SET acp_session_id = ?1, session_state = 'warm' WHERE id = ?2",
+                rusqlite::params![session_id, task_id],
+            );
+        }
+        let mut reducer = TurnReducer::new(task_id, turn_id, &session_id);
         // Local seed is already persisted; prime reducer so ACP user echoes dedupe.
         reducer.seed_existing_user_message(&input.task);
 
@@ -907,10 +917,10 @@ impl TaskManager {
         let result = RunResult {
             task_id: task_id.into(),
             turn_id: turn_id.into(),
-            turn_ordinal: 1,
+            turn_ordinal,
             status: RunStatus::Completed,
             mode: input.mode,
-            session_id: Some(session_id.into()),
+            session_id: Some(session_id),
             requested_model: input.model.clone(),
             actual_model: Some("fixture".into()),
             stop_reason: Some("end_turn".into()),
@@ -940,6 +950,10 @@ impl TaskManager {
             TaskMode::Write => AcpMode::Write,
         };
         let argv = build_grok_argv(mode, input.model.as_deref(), input.effort.as_deref());
+        // Hard guarantee: ordinal lookup failure must not default to 1 (which would
+        // misclassify a follow-up as first turn and allow session/new).
+        let turn_ordinal = self.turn_ordinal(task_id, turn_id)?;
+        let stored_session = self.stored_acp_session_id(task_id)?;
 
         if let Ok(conn) = self.open() {
             let _ = repository::update_task_status(&conn, task_id, "running", now_ms());
@@ -983,22 +997,27 @@ impl TaskManager {
         write_rpc(&mut stdin, &init).await?;
         let _init_resp = read_rpc_response(&mut reader).await?;
 
-        // session/new
-        let new_req = json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "session/new",
-            "params": { "cwd": input.cwd, "mcpServers": [] }
-        });
-        write_rpc(&mut stdin, &new_req).await?;
-        let new_resp = read_rpc_response(&mut reader).await?;
-        let session_id = new_resp
-            .pointer("/result/sessionId")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string();
+        // First turn: session/new. Follow-up: session/load with persisted id only.
+        // Never silently replace a missing/failed load with session/new.
+        let session_id = match open_or_load_session(
+            &mut stdin,
+            &mut reader,
+            &input.cwd,
+            stored_session.as_deref(),
+            turn_ordinal,
+        )
+        .await
+        {
+            Ok(sid) => sid,
+            Err(e) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(e);
+            }
+        };
 
         if let Ok(conn) = self.open() {
+            // Preserve stored id on load; set on first new. Never clear on failure path above.
             let _ = conn.execute(
                 "UPDATE tasks SET acp_session_id = ?1, session_state = 'warm' WHERE id = ?2",
                 rusqlite::params![session_id, task_id],
@@ -1136,7 +1155,7 @@ impl TaskManager {
         let result = RunResult {
             task_id: task_id.into(),
             turn_id: turn_id.into(),
-            turn_ordinal: 1,
+            turn_ordinal,
             status: run_status,
             mode: input.mode,
             session_id: Some(session_id),
@@ -1155,6 +1174,24 @@ impl TaskManager {
         Ok(result)
     }
 
+    fn stored_acp_session_id(&self, task_id: &str) -> Result<Option<String>> {
+        let conn = self.open()?;
+        let task =
+            repository::get_task(&conn, task_id)?.context("task missing for session lookup")?;
+        Ok(task
+            .acp_session_id
+            .filter(|s| !s.is_empty() && s != "unknown"))
+    }
+
+    fn turn_ordinal(&self, task_id: &str, turn_id: &str) -> Result<u32> {
+        let conn = self.open()?;
+        let turn = repository::get_turn(&conn, turn_id)?.context("turn missing")?;
+        if turn.task_id != task_id {
+            return Err(anyhow!("turn does not belong to task"));
+        }
+        Ok(turn.ordinal as u32)
+    }
+
     async fn fail_turn(
         &self,
         task_id: &str,
@@ -1165,18 +1202,18 @@ impl TaskManager {
         _rt: &TurnRuntime,
     ) -> RunResult {
         let finished = now_ms();
-        let code = if err.to_string().contains("grok") {
-            "grok_not_found"
-        } else {
-            "internal_error"
-        };
+        let msg = format!("{err:#}");
+        let code = classify_turn_error(&msg);
+        let turn_ordinal = self.turn_ordinal(task_id, turn_id).unwrap_or(1);
+        // Keep any previously stored session id on load failures (do not clear).
+        let session_id = self.stored_acp_session_id(task_id).ok().flatten();
         let result = RunResult {
             task_id: task_id.into(),
             turn_id: turn_id.into(),
-            turn_ordinal: 1,
+            turn_ordinal,
             status: RunStatus::Failed,
             mode: input.mode,
-            session_id: None,
+            session_id,
             requested_model: input.model.clone(),
             actual_model: None,
             stop_reason: None,
@@ -1185,8 +1222,11 @@ impl TaskManager {
             answer: String::new(),
             error: Some(ErrorInfo {
                 code: code.into(),
-                message: format!("{err:#}"),
-                retryable: code == "grok_not_found",
+                message: msg,
+                retryable: matches!(
+                    code,
+                    "grok_not_found" | "session_load_failed" | "session_unavailable"
+                ),
             }),
             started_at: ms_to_rfc3339(started),
             finished_at: ms_to_rfc3339(finished),
@@ -1428,7 +1468,10 @@ fn which(name: &str) -> Result<PathBuf> {
     Err(anyhow!("not found: {name}"))
 }
 
-async fn write_rpc(stdin: &mut tokio::process::ChildStdin, msg: &serde_json::Value) -> Result<()> {
+async fn write_rpc(
+    stdin: &mut (impl AsyncWriteExt + Unpin),
+    msg: &serde_json::Value,
+) -> Result<()> {
     let mut line = serde_json::to_string(msg)?;
     line.push('\n');
     stdin.write_all(line.as_bytes()).await?;
@@ -1500,26 +1543,195 @@ fn permission_option_status(option_id: &str) -> &'static str {
     }
 }
 
-async fn read_rpc_response(
-    reader: &mut BufReader<tokio::process::ChildStdout>,
+async fn read_rpc_response(reader: &mut (impl AsyncBufRead + Unpin)) -> Result<serde_json::Value> {
+    // initialize uses id 1
+    read_rpc_response_for_id(reader, 1).await
+}
+
+fn rpc_id_matches(v: &serde_json::Value, expected: i64) -> bool {
+    match v.get("id") {
+        Some(serde_json::Value::Number(n)) => n
+            .as_i64()
+            .map(|i| i == expected)
+            .or_else(|| n.as_u64().map(|u| u as i64 == expected))
+            .unwrap_or(false),
+        Some(serde_json::Value::String(s)) => s.parse::<i64>().ok() == Some(expected),
+        _ => false,
+    }
+}
+
+/// Wait for the JSON-RPC response whose `id` equals `expected_id`.
+///
+/// Discards intermediate notifications (e.g. `session/load` replay) so they never
+/// hit the live timeline reducer. Unexpected responses with a different `id` fail.
+async fn read_rpc_response_for_id(
+    reader: &mut (impl AsyncBufRead + Unpin),
+    expected_id: i64,
 ) -> Result<serde_json::Value> {
     let mut line = String::new();
     loop {
         line.clear();
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
-            return Err(anyhow!("EOF from grok before response"));
+            return Err(anyhow!(
+                "EOF from grok before JSON-RPC response id {expected_id}"
+            ));
         }
         let t = line.trim();
         if t.is_empty() {
             continue;
         }
-        let v: serde_json::Value = serde_json::from_str(t)?;
-        if v.get("id").is_some() {
+        let v: serde_json::Value = serde_json::from_str(t).with_context(|| {
+            format!("invalid JSON while waiting for response id {expected_id}: {t}")
+        })?;
+        if v.get("id").is_none() {
+            // Notification (e.g. session/load replay) — ignore for timeline.
+            continue;
+        }
+        if rpc_id_matches(&v, expected_id) {
             return Ok(v);
         }
-        // skip notifications during handshake
+        return Err(anyhow!(
+            "unexpected JSON-RPC response id while waiting for {expected_id}: {t}"
+        ));
     }
+}
+
+/// Validate `session/load` JSON-RPC response for the requested session id.
+///
+/// Requires a success `result`. A non-empty `result.sessionId` that differs from
+/// the stored/requested id is `session_load_failed` (stored id is not updated here).
+pub(crate) fn validate_session_load_response(
+    requested_sid: &str,
+    resp: &serde_json::Value,
+) -> Result<String> {
+    if let Some(err) = resp.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("session/load failed");
+        return Err(anyhow!(
+            "session_load_failed: could not load ACP session `{requested_sid}`: {msg}. \
+             The stored session id was preserved; fix Grok/auth or start a new task \
+             with run/start if this conversation context is lost. Do not invent a new session."
+        ));
+    }
+    let Some(result) = resp.get("result") else {
+        return Err(anyhow!(
+            "session_load_failed: session/load response for `{requested_sid}` missing success \
+             result (malformed JSON-RPC). The stored session id was preserved."
+        ));
+    };
+    match result.get("sessionId").and_then(|v| v.as_str()) {
+        None | Some("") => {
+            // Success result without sessionId: keep the requested/stored id.
+            Ok(requested_sid.to_string())
+        }
+        Some(loaded) if loaded == requested_sid => Ok(requested_sid.to_string()),
+        Some(loaded) => Err(anyhow!(
+            "session_load_failed: session/load returned sessionId `{loaded}` but stored/requested \
+             id is `{requested_sid}`. Refusing to continue with a different session. \
+             The stored session id was preserved."
+        )),
+    }
+}
+
+pub(crate) fn validate_session_new_response(resp: &serde_json::Value) -> Result<String> {
+    if let Some(err) = resp.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("session/new failed");
+        return Err(anyhow!("session_create_failed: {msg}"));
+    }
+    if resp.get("result").is_none() {
+        return Err(anyhow!(
+            "session_create_failed: session/new response missing success result"
+        ));
+    }
+    resp.pointer("/result/sessionId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("session_create_failed: session/new returned no sessionId"))
+}
+
+/// Open a new ACP session or load an existing one. Pure protocol helper for tests.
+///
+/// - Stored `acp_session_id` present → `session/load` only (never `session/new`).
+/// - Absent and first turn → `session/new`.
+/// - Absent on a genuine follow-up (ordinal > 1) → hard error; never invent a session.
+pub(crate) async fn open_or_load_session(
+    stdin: &mut (impl AsyncWriteExt + Unpin),
+    reader: &mut (impl AsyncBufRead + Unpin),
+    cwd: &str,
+    stored_session_id: Option<&str>,
+    turn_ordinal: u32,
+) -> Result<String> {
+    if let Some(sid) = stored_session_id.filter(|s| !s.is_empty()) {
+        let load_req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "session/load",
+            "params": {
+                "sessionId": sid,
+                "cwd": cwd,
+                "mcpServers": []
+            }
+        });
+        write_rpc(stdin, &load_req).await?;
+        let load_resp = read_rpc_response_for_id(reader, 2).await?;
+        return validate_session_load_response(sid, &load_resp);
+    }
+
+    if turn_ordinal > 1 {
+        return Err(anyhow!(
+            "session_unavailable: follow-up turn (ordinal {turn_ordinal}) has no persisted \
+             acp_session_id. Cannot call session/new on a follow-up; resume requires a stored \
+             session id. Start a new task with run/start if you need a fresh context."
+        ));
+    }
+
+    let new_req = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "session/new",
+        "params": { "cwd": cwd, "mcpServers": [] }
+    });
+    write_rpc(stdin, &new_req).await?;
+    let new_resp = read_rpc_response_for_id(reader, 2).await?;
+    validate_session_new_response(&new_resp)
+}
+
+fn classify_turn_error(msg: &str) -> &'static str {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("session_load_failed") {
+        "session_load_failed"
+    } else if lower.contains("session_unavailable") {
+        "session_unavailable"
+    } else if lower.contains("session_create_failed") {
+        "session_create_failed"
+    } else if lower.contains("grok") {
+        "grok_not_found"
+    } else {
+        "internal_error"
+    }
+}
+
+/// Which ACP session method should be used (unit-tested without a process).
+pub(crate) fn session_open_method(
+    stored_session_id: Option<&str>,
+    turn_ordinal: u32,
+) -> Result<&'static str, String> {
+    if stored_session_id.map(|s| !s.is_empty()).unwrap_or(false) {
+        return Ok("session/load");
+    }
+    if turn_ordinal > 1 {
+        return Err(
+            "session_unavailable: follow-up has no acp_session_id; refuse session/new".into(),
+        );
+    }
+    Ok("session/new")
 }
 
 #[derive(Debug)]
@@ -1700,5 +1912,445 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("allow-once")
         );
+    }
+
+    #[test]
+    fn first_turn_uses_session_new_followup_uses_session_load() {
+        assert_eq!(session_open_method(None, 1).unwrap(), "session/new");
+        assert_eq!(
+            session_open_method(Some("sess-1"), 1).unwrap(),
+            "session/load"
+        );
+        assert_eq!(
+            session_open_method(Some("sess-1"), 2).unwrap(),
+            "session/load"
+        );
+        let err = session_open_method(None, 2).unwrap_err();
+        assert!(err.contains("session_unavailable"));
+        assert!(!err.contains("session/new") || err.contains("refuse"));
+    }
+
+    #[test]
+    fn followup_ordinal_must_not_default_to_first_turn() {
+        // Hard guarantee: treating a missing ordinal as 1 would allow session/new
+        // on a genuine follow-up. session_open_method encodes the gate; production
+        // must propagate turn_ordinal lookup errors instead of unwrap_or(1).
+        assert!(
+            session_open_method(None, 2).is_err(),
+            "ordinal>1 without stored session must refuse session/new"
+        );
+        assert_eq!(
+            session_open_method(None, 1).unwrap(),
+            "session/new",
+            "only true first turn may session/new"
+        );
+    }
+
+    #[test]
+    fn turn_ordinal_lookup_failure_does_not_yield_one() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("h.sqlite3");
+        let _ = crate::storage::open_path(&db).unwrap();
+        let mgr = TaskManager::new(db, None);
+        let err = mgr
+            .turn_ordinal("missing-task", "missing-turn")
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            !msg.is_empty(),
+            "lookup failure must be an error, not Ok(1)"
+        );
+        // Ensure we never silently invent ordinal 1 via Result::ok
+        assert!(mgr.turn_ordinal("missing-task", "missing-turn").is_err());
+    }
+
+    #[test]
+    fn session_load_rejects_mismatched_session_id() {
+        let resp = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": { "sessionId": "other-sess" }
+        });
+        let err = validate_session_load_response("stored-sess", &resp).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("session_load_failed"), "{msg}");
+        assert!(msg.contains("other-sess"), "{msg}");
+        assert!(msg.contains("stored-sess"), "{msg}");
+        assert!(msg.contains("preserved"), "{msg}");
+    }
+
+    #[test]
+    fn session_load_rejects_error_and_malformed_responses() {
+        let err_resp = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": { "code": -32000, "message": "unknown session" }
+        });
+        let err = validate_session_load_response("stored-sess", &err_resp).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("session_load_failed"), "{msg}");
+        assert!(msg.contains("unknown session"), "{msg}");
+        assert!(msg.contains("preserved"), "{msg}");
+
+        let malformed = json!({ "jsonrpc": "2.0", "id": 2 });
+        let err = validate_session_load_response("stored-sess", &malformed).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("session_load_failed"), "{msg}");
+        assert!(
+            msg.contains("missing success") || msg.contains("malformed"),
+            "{msg}"
+        );
+
+        let empty_id = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": { "sessionId": "" }
+        });
+        // Empty sessionId keeps requested id (success without replacement).
+        assert_eq!(
+            validate_session_load_response("stored-sess", &empty_id).unwrap(),
+            "stored-sess"
+        );
+
+        let ok = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": { "sessionId": "stored-sess" }
+        });
+        assert_eq!(
+            validate_session_load_response("stored-sess", &ok).unwrap(),
+            "stored-sess"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_load_waits_for_id_2_and_discards_replay() {
+        let (host, agent) = tokio::io::duplex(8192);
+        let (host_read, mut host_write) = tokio::io::split(host);
+        let (mut agent_read, mut agent_write) = tokio::io::split(agent);
+
+        let agent_task = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            // Drain the load request
+            let mut buf = vec![0u8; 4096];
+            let _ = agent_read.read(&mut buf).await;
+            // Replay notification then success with matching id
+            agent_write
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"REPLAY"}}}}
+{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-exact"}}
+"#,
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut reader = BufReader::new(host_read);
+        let sid = open_or_load_session(&mut host_write, &mut reader, "/tmp", Some("sess-exact"), 2)
+            .await
+            .unwrap();
+        assert_eq!(sid, "sess-exact");
+        agent_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_load_mismatched_id_over_wire_fails() {
+        let (host, agent) = tokio::io::duplex(8192);
+        let (host_read, mut host_write) = tokio::io::split(host);
+        let (mut agent_read, mut agent_write) = tokio::io::split(agent);
+
+        let agent_task = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = vec![0u8; 4096];
+            let _ = agent_read.read(&mut buf).await;
+            agent_write
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"wrong-id"}}
+"#,
+                )
+                .await
+                .unwrap();
+        });
+
+        let mut reader = BufReader::new(host_read);
+        let err = open_or_load_session(&mut host_write, &mut reader, "/tmp", Some("stored-id"), 2)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("session_load_failed"), "{msg}");
+        assert!(msg.contains("wrong-id"), "{msg}");
+        agent_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn followup_without_stored_session_refuses_before_session_new() {
+        let (host, _agent) = tokio::io::duplex(64);
+        let (host_read, mut host_write) = tokio::io::split(host);
+        let mut reader = BufReader::new(host_read);
+        let err = open_or_load_session(&mut host_write, &mut reader, "/tmp", None, 2)
+            .await
+            .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("session_unavailable"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn fixture_continue_creates_second_turn_same_session() {
+        std::env::set_var("GROKTASK_FIXTURE", "1");
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("h.sqlite3");
+        let _ = crate::storage::open_path(&db).unwrap();
+        let mgr = Arc::new(TaskManager::new(db, None));
+        let input = TaskInput {
+            task: "first turn".into(),
+            cwd: tmp.path().to_string_lossy().into_owned(),
+            mode: TaskMode::Read,
+            model: None,
+            effort: None,
+            title: Some("Reuse".into()),
+        };
+        let start = mgr
+            .start(input, "sub-cont-1".into(), "client", None, None)
+            .unwrap();
+        let r1 = mgr
+            .wait(&start.task_id, &start.turn_id, 5_000)
+            .await
+            .unwrap();
+        assert_eq!(r1.status, RunStatus::Completed);
+        assert_eq!(r1.turn_ordinal, 1);
+        assert_eq!(r1.session_id.as_deref(), Some("fixture-session"));
+
+        let cont = mgr
+            .continue_task(&start.task_id, "second turn".into(), "client", None, None)
+            .unwrap();
+        assert_eq!(cont.turn_ordinal, 2);
+        assert_ne!(cont.turn_id, start.turn_id);
+        let r2 = mgr.wait(&cont.task_id, &cont.turn_id, 5_000).await.unwrap();
+        assert_eq!(r2.status, RunStatus::Completed);
+        assert_eq!(r2.turn_ordinal, 2);
+        assert_eq!(r2.session_id.as_deref(), Some("fixture-session"));
+        assert!(r2.answer.contains("second turn"), "{}", r2.answer);
+
+        let conn = mgr.open().unwrap();
+        let task = repository::get_task(&conn, &start.task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.acp_session_id.as_deref(), Some("fixture-session"));
+        let turns = repository::list_turns_for_task(&conn, &start.task_id).unwrap();
+        assert_eq!(turns.len(), 2);
+
+        std::env::remove_var("GROKTASK_FIXTURE");
+    }
+
+    #[cfg(unix)]
+    fn write_executable_script(path: &std::path::Path, body: &str) {
+        std::fs::write(path, body).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn mock_grok_first_turn_session_new_followup_session_load() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("h.sqlite3");
+        let _ = crate::storage::open_path(&db).unwrap();
+        let log_path = tmp.path().join("methods.log");
+        let mock = tmp.path().join("mock-grok");
+        // Append methods to a shared log so both process invocations are visible.
+        let script = format!(
+            r###"#!/usr/bin/env bash
+set -euo pipefail
+LOG="{log}"
+while IFS= read -r line; do
+  method=$(printf '%s' "$line" | sed -n 's/.*"method"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  id=$(printf '%s' "$line" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+  if [[ -n "${{method:-}}" ]]; then
+    echo "$method" >> "$LOG"
+  fi
+  case "${{method:-}}" in
+    initialize)
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":${{id:-1}},\"result\":{{\"protocolVersion\":1,\"agentCapabilities\":{{\"loadSession\":true}}}}}}"
+      ;;
+    session/new)
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":${{id:-2}},\"result\":{{\"sessionId\":\"mock-sess-42\"}}}}"
+      ;;
+    session/load)
+      echo '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"REPLAY_MUST_NOT_APPEAR"}}}}}}}}'
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":${{id:-2}},\"result\":{{\"sessionId\":\"mock-sess-42\"}}}}"
+      ;;
+    session/prompt)
+      echo '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"live answer"}}}}}}}}'
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":${{id:-3}},\"result\":{{\"stopReason\":\"end_turn\"}}}}"
+      ;;
+  esac
+done
+"###,
+            log = log_path.display()
+        );
+        write_executable_script(&mock, &script);
+
+        std::env::remove_var("GROKTASK_FIXTURE");
+        let mgr = Arc::new(TaskManager::new(
+            db,
+            Some(mock.to_string_lossy().into_owned()),
+        ));
+        let input = TaskInput {
+            task: "hello mock".into(),
+            cwd: tmp.path().to_string_lossy().into_owned(),
+            mode: TaskMode::Read,
+            model: None,
+            effort: None,
+            title: Some("MockACP".into()),
+        };
+        let start = mgr
+            .start(input, "sub-mock-1".into(), "client", None, None)
+            .unwrap();
+        let r1 = mgr
+            .wait(&start.task_id, &start.turn_id, 10_000)
+            .await
+            .unwrap();
+        assert_eq!(r1.status, RunStatus::Completed, "{:?}", r1.error);
+        assert_eq!(r1.session_id.as_deref(), Some("mock-sess-42"));
+        assert!(r1.answer.contains("live answer"), "{}", r1.answer);
+
+        let log1 = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            log1.lines().any(|l| l == "session/new"),
+            "first turn must session/new: {log1}"
+        );
+        assert!(
+            !log1.lines().any(|l| l == "session/load"),
+            "first turn must not session/load: {log1}"
+        );
+
+        let cont = mgr
+            .continue_task(
+                &start.task_id,
+                "follow up please".into(),
+                "client",
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(cont.turn_ordinal, 2);
+        let r2 = mgr
+            .wait(&cont.task_id, &cont.turn_id, 10_000)
+            .await
+            .unwrap();
+        assert_eq!(r2.status, RunStatus::Completed, "{:?}", r2.error);
+        assert_eq!(r2.session_id.as_deref(), Some("mock-sess-42"));
+        assert!(r2.answer.contains("live answer"), "{}", r2.answer);
+        assert!(
+            !r2.answer.contains("REPLAY_MUST_NOT_APPEAR"),
+            "load replay must not pollute answer: {}",
+            r2.answer
+        );
+
+        let log2 = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(
+            log2.lines().any(|l| l == "session/load"),
+            "follow-up must session/load: {log2}"
+        );
+        // Exactly one session/new across both process invocations.
+        let new_count = log2.lines().filter(|l| *l == "session/new").count();
+        assert_eq!(new_count, 1, "session/new only on first turn, log={log2}");
+
+        let detail = mgr.detail(&start.task_id).unwrap();
+        for ev in &detail.timeline {
+            assert!(
+                !ev.message.contains("REPLAY_MUST_NOT_APPEAR"),
+                "timeline must not include load-replay text: {}",
+                ev.message
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn followup_without_session_id_fails_actionably() {
+        std::env::set_var("GROKTASK_FIXTURE", "1");
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("h.sqlite3");
+        let _ = crate::storage::open_path(&db).unwrap();
+        let mgr = Arc::new(TaskManager::new(db.clone(), None));
+        let input = TaskInput {
+            task: "first".into(),
+            cwd: tmp.path().to_string_lossy().into_owned(),
+            mode: TaskMode::Read,
+            model: None,
+            effort: None,
+            title: None,
+        };
+        let start = mgr
+            .start(input, "sub-nosess".into(), "client", None, None)
+            .unwrap();
+        let _ = mgr
+            .wait(&start.task_id, &start.turn_id, 5_000)
+            .await
+            .unwrap();
+        {
+            let conn = mgr.open().unwrap();
+            conn.execute(
+                "UPDATE tasks SET acp_session_id = NULL WHERE id = ?1",
+                rusqlite::params![start.task_id],
+            )
+            .unwrap();
+        }
+        std::env::remove_var("GROKTASK_FIXTURE");
+
+        let err = session_open_method(None, 2).unwrap_err();
+        assert!(err.contains("session_unavailable"));
+
+        let mock = tmp.path().join("mock-fail");
+        write_executable_script(
+            &mock,
+            r#"#!/usr/bin/env bash
+while IFS= read -r line; do
+  method=$(printf '%s' "$line" | sed -n 's/.*"method"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  id=$(printf '%s' "$line" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')
+  case "${method:-}" in
+    initialize)
+      echo "{\"jsonrpc\":\"2.0\",\"id\":${id:-1},\"result\":{\"protocolVersion\":1}}"
+      ;;
+    session/new)
+      echo "{\"jsonrpc\":\"2.0\",\"id\":${id:-2},\"result\":{\"sessionId\":\"should-not-happen\"}}"
+      ;;
+  esac
+done
+"#,
+        );
+        let mgr2 = Arc::new(TaskManager::new(
+            db,
+            Some(mock.to_string_lossy().into_owned()),
+        ));
+        let cont = mgr2
+            .continue_task(
+                &start.task_id,
+                "second without session".into(),
+                "client",
+                None,
+                None,
+            )
+            .unwrap();
+        let r2 = mgr2
+            .wait(&cont.task_id, &cont.turn_id, 10_000)
+            .await
+            .unwrap();
+        assert_eq!(r2.status, RunStatus::Failed);
+        let err = r2.error.as_ref().expect("error");
+        assert_eq!(err.code, "session_unavailable");
+        assert!(
+            err.message.contains("session_unavailable") || err.message.contains("follow-up"),
+            "{}",
+            err.message
+        );
+        let conn = mgr2.open().unwrap();
+        let task = repository::get_task(&conn, &start.task_id)
+            .unwrap()
+            .unwrap();
+        assert!(task.acp_session_id.is_none() || task.acp_session_id.as_deref() == Some(""));
     }
 }

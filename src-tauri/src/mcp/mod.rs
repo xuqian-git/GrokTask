@@ -1,4 +1,4 @@
-//! MCP stdio server: tools run/start/status/wait/cancel.
+//! MCP stdio server: tools run/start/continue/status/wait/cancel.
 //!
 //! Stdout is reserved for MCP JSON-RPC framing. Logs go to stderr only.
 //! Never initializes Tauri/WebView.
@@ -123,21 +123,35 @@ pub fn tool_defs() -> Vec<Value> {
     vec![
         json!({
             "name": "run",
-            "description": "delegate a planned coding implementation, file modification, test-writing, or fix-implementation task to external xAI Grok Build and block until the turn finishes. Use after the host agent has completed planning/analysis and has concrete acceptance criteria. mode must be explicit read|write (write may modify cwd). Progress is persisted locally. Prefer start for long background code work.",
+            "description": "Start a new GrokTask for the first turn of a host conversation+workspace (or after explicit reset). Delegates workspace work—coding, debugging/root-cause, CI diagnosis/fixes, code review, tests, docs, research, performance/stability/security analysis—to external xAI Grok Build and blocks until the turn finishes. Retain the returned taskId for later continue calls on the same conversation+workspace. mode must be explicit read|write (write may modify cwd); never silently switch read→write later. Prefer start for long background work; use continue (not a fresh run) for follow-ups on an existing taskId.",
             "inputSchema": task_input_schema(false)
         }),
         json!({
             "name": "start",
-            "description": "delegate a long-running planned coding implementation, file modification, test-writing, or fix-implementation task to external xAI Grok Build and return immediately with taskId+turnId. Use after the host agent has completed planning/analysis and should monitor the resulting code changes. Requires caller-generated submissionId (UUID) for exactly-once retry. mode must be explicit read|write. Disconnect does not cancel the task — use cancel.",
+            "description": "Start a new long-running GrokTask for the first turn of a host conversation+workspace (or after explicit reset) and return immediately with taskId+turnId. Same delegation scope as run (coding, debugging, CI, review, tests, docs, research, analysis). Requires caller-generated submissionId (UUID) for exactly-once retry. mode must be explicit read|write; never silently switch read→write on later turns. Disconnect does not cancel — use cancel. For follow-ups on the same taskId use continue, not another start.",
             "inputSchema": task_input_schema(true)
         }),
         json!({
-            "name": "status",
-            "description": "Snapshot status for a delegated Grok taskId returned by run/start. Non-blocking; does not return full transcript.",
+            "name": "continue",
+            "description": "Continue an existing GrokTask with a new prompt on the same ACP session (same taskId). Use for later turns/follow-ups within the same host conversation and workspace after run/start. Calls the daemon task.continue route (does not create a new task or session). Blocks until the new turn finishes and returns that turn's immutable RunResult. Does not change the task mode (read stays read, write stays write). Only use a fresh run/start when the host conversation or workspace changes, or the user explicitly asks for a new context.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "taskId": { "type": "string", "description": "Task id from run/start" }
+                    "taskId": { "type": "string", "description": "Task id retained from run/start for this host conversation+workspace" },
+                    "prompt": { "type": "string", "maxLength": MAX_TASK_BYTES, "description": "Next user/host prompt for this task" },
+                    "timeoutMs": { "type": "integer", "minimum": 0, "maximum": 300000, "description": "Optional wait timeout for the new turn (same bounds as wait)" }
+                },
+                "required": ["taskId", "prompt"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "status",
+            "description": "Snapshot status for a delegated Grok taskId returned by run/start/continue. Non-blocking; does not return full transcript.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "taskId": { "type": "string", "description": "Task id from run/start/continue" }
                 },
                 "required": ["taskId"],
                 "additionalProperties": false
@@ -145,7 +159,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "wait",
-            "description": "Wait for a specific delegated Grok turn (taskId, turnId) to finish. Returns immutable RunResult or timedOut snapshot. Always pass the original turnId from start/run.",
+            "description": "Wait for a specific delegated Grok turn (taskId, turnId) to finish. Returns immutable RunResult or timedOut snapshot. Always pass the original turnId from start/run/continue.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -199,6 +213,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "run" => tool_run(args),
         "start" => tool_start(args),
+        "continue" => tool_continue(args),
         "status" => tool_status(args),
         "wait" => tool_wait(args),
         "cancel" => tool_cancel(args),
@@ -267,6 +282,57 @@ fn tool_start(args: &Value) -> Result<Value, String> {
         start.task_id, start.turn_id, start.status
     );
     Ok(tool_result_text(text, v))
+}
+
+fn tool_continue(args: &Value) -> Result<Value, String> {
+    let task_id = args
+        .get("taskId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "taskId is required".to_string())?;
+    let task_id = validate_uuid_like(task_id, "taskId").map_err(|e| e.message)?;
+    let prompt = args
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "prompt is required".to_string())?;
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err("prompt is required".into());
+    }
+    if prompt.len() > MAX_TASK_BYTES {
+        return Err(format!("prompt exceeds {MAX_TASK_BYTES} UTF-8 bytes"));
+    }
+    let timeout_ms = args
+        .get("timeoutMs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(MAX_WAIT_TIMEOUT_MS)
+        .min(MAX_WAIT_TIMEOUT_MS);
+
+    let cont_params = json!({ "taskId": task_id, "prompt": prompt });
+    let cont_resp = client::request_blocking(ClientRole::Mcp, "task.continue", cont_params)
+        .map_err(|e| format!("daemon IPC: {e:#}"))?;
+    let cont_v = unwrap_result(cont_resp).map_err(|e| e.to_string())?;
+    let start: StartResult = serde_json::from_value(cont_v).map_err(|e| e.to_string())?;
+
+    let wait_params = json!({
+        "taskId": start.task_id,
+        "turnId": start.turn_id,
+        "timeoutMs": timeout_ms,
+    });
+    let wait_resp = client::request_blocking(ClientRole::Mcp, "task.wait", wait_params)
+        .map_err(|e| format!("daemon IPC: {e:#}"))?;
+    let v = unwrap_result(wait_resp).map_err(|e| e.to_string())?;
+    if v.get("timedOut").and_then(|t| t.as_bool()) == Some(true) {
+        let w: WaitTimeout = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
+        let text = format!(
+            "timedOut taskId={} turnId={} status={}",
+            w.task_id,
+            w.turn_id,
+            w.status.as_str()
+        );
+        return Ok(tool_result_text(text, v));
+    }
+    let result: RunResult = serde_json::from_value(v.clone()).map_err(|e| e.to_string())?;
+    Ok(tool_result_text(run_result_text_summary(&result), v))
 }
 
 fn tool_status(args: &Value) -> Result<Value, String> {
@@ -365,14 +431,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_list_has_exactly_five() {
+    fn tool_list_has_exactly_six() {
         let tools = tool_defs();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 6);
         let names: Vec<_> = tools
             .iter()
             .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
             .collect();
-        assert_eq!(names, vec!["run", "start", "status", "wait", "cancel"]);
+        assert_eq!(
+            names,
+            vec!["run", "start", "continue", "status", "wait", "cancel"]
+        );
+    }
+
+    #[test]
+    fn continue_schema_requires_task_id_and_prompt() {
+        let tools = tool_defs();
+        let cont = tools.iter().find(|t| t["name"] == "continue").unwrap();
+        let req = cont["inputSchema"]["required"].as_array().unwrap();
+        assert!(req.iter().any(|v| v == "taskId"));
+        assert!(req.iter().any(|v| v == "prompt"));
+        assert!(!req.iter().any(|v| v == "mode"));
+        let d = cont["description"].as_str().unwrap();
+        assert!(d.contains("task.continue") || d.contains("continue"));
+        assert!(d.contains("taskId"));
+        assert!(d.contains("follow-up") || d.contains("后续") || d.contains("same"));
+        assert!(d.contains("does not create a new task") || d.contains("same ACP"));
     }
 
     #[test]
@@ -387,27 +471,56 @@ mod tests {
     }
 
     #[test]
-    fn run_description_mentions_external_grok_and_mode() {
+    fn run_start_continue_descriptions_match_session_reuse_contract() {
         let tools = tool_defs();
         let run = tools.iter().find(|t| t["name"] == "run").unwrap();
         let d = run["description"].as_str().unwrap();
         assert!(d.contains("xAI Grok") || d.contains("Grok"));
         assert!(d.contains("read") && d.contains("write"));
-        assert!(d.contains("delegate") || d.contains("委派"));
-        assert!(d.contains("implementation") || d.contains("实现"));
-        assert!(!d.contains("debugging"));
-        assert!(!d.contains("review"));
+        assert!(d.contains("taskId"));
+        assert!(d.contains("continue"));
+        assert!(d.contains("debugging") || d.contains("review") || d.contains("CI"));
+        assert!(!d.contains("after the host agent has completed planning"));
+
         let start = tools.iter().find(|t| t["name"] == "start").unwrap();
         let start_d = start["description"].as_str().unwrap();
         assert!(start_d.contains("long") || start_d.contains("background"));
-        assert!(start_d.contains("delegate") || start_d.contains("委派"));
-        assert!(!start_d.contains("debugging"));
-        assert!(!start_d.contains("review"));
+        assert!(start_d.contains("continue"));
+        assert!(start_d.contains("taskId"));
+
+        let cont = tools.iter().find(|t| t["name"] == "continue").unwrap();
+        let cont_d = cont["description"].as_str().unwrap();
+        assert!(cont_d.contains("taskId"));
+        assert!(cont_d.contains("run/start") || cont_d.contains("run") || cont_d.contains("start"));
+        assert!(
+            cont_d.contains("Does not change the task mode")
+                || cont_d.contains("read stays read")
+                || cont_d.contains("never")
+        );
+    }
+
+    #[test]
+    fn task_input_schema_has_single_title_key() {
+        let schema = task_input_schema(false);
+        let props = schema["properties"].as_object().unwrap();
+        assert_eq!(props.keys().filter(|k| *k == "title").count(), 1);
+        // Serialize and ensure JSON object does not invent duplicate keys
+        let s = serde_json::to_string(&schema).unwrap();
+        assert_eq!(s.matches("\"title\"").count(), 1);
     }
 
     #[test]
     fn parse_task_args_rejects_missing_mode() {
         let err = parse_task_args(&json!({"task":"hi","cwd":"/tmp"})).unwrap_err();
         assert!(err.contains("mode"));
+    }
+
+    #[test]
+    fn call_tool_dispatches_continue_name() {
+        // Unknown tool still rejected; continue is a known name (fails at daemon without args)
+        let err = call_tool("continue", &json!({})).unwrap_err();
+        assert!(err.contains("taskId") || err.contains("required"));
+        let err2 = call_tool("nope", &json!({})).unwrap_err();
+        assert!(err2.contains("unknown tool"));
     }
 }

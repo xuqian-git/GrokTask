@@ -65,7 +65,7 @@ Replace the phase-status README with a user-facing standalone README covering:
   - release build with `custom-protocol`
   - Tauri no-bundle build
 - Usage:
-  - CLI `run/start/status/wait/cancel`
+  - CLI `run/start/status/wait/cancel`；MCP 另含阻塞 `continue`
   - blocking `run` semantics, especially “blocks until Grok returns,” matching AskHuman-like tool behavior.
   - explicit read/write modes and safety expectations.
   - MCP server command for Codex/Claude.

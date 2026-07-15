@@ -54,15 +54,16 @@ GrokTask daemon start|stop|restart [--force]|status|logs
 
 `GrokTask mcp` 使用 stdio，只在 stdout 发送 MCP framing；所有日志写 stderr/daemon log。server name 为 `groktask`，不发布 UI resource、localhost URL 或 MCP Apps 模板。
 
-工具集合固定为：
+工具集合固定为六个：
 
 - `run`
 - `start`
+- `continue`
 - `status`
 - `wait`
 - `cancel`
 
-UI follow-up 是 GrokTask 桌面端功能，首发不增加第六个 MCP 工具。
+`continue` 是阻塞式 follow-up：在同一 `taskId`（同一主机对话 + workspace）上调用 daemon `task.continue`，复用已持久化的 ACP `sessionId`（`session/load` + `session/prompt`），返回新 turn 的不可变 `RunResult`。桌面 UI 仍可直接使用内部 `task.continue`。
 
 ### 3.1 公共任务输入
 
@@ -143,7 +144,29 @@ MCP text content 为一段简洁摘要：`completed && !partial` 时以 `answer`
 
 MCP 进程断开不取消异步任务。
 
-### 3.4 `status`
+### 3.4 `continue`
+
+用途：在已有 task 上追加一轮用户 prompt，阻塞到新 turn 完成。不创建新 task，不改 mode。
+
+输入：
+
+```ts
+{
+  taskId: string;           // 同一主机对话 + workspace 上 run/start 返回并保留的 id
+  prompt: string;           // 非空，上限同 task
+  timeoutMs?: number;       // 可选；默认与 wait 上限一致（max 300_000）
+}
+```
+
+行为：
+
+1. 调用 daemon `task.continue` 创建新 turn（ordinal N+1）；
+2. 若 task 已有 `acp_session_id`，ACP 运行时 `session/load` 该 id，再 `session/prompt`（禁止 follow-up 上 `session/new`）；
+3. 阻塞等待该 turn 的不可变 `RunResult`（与 `run`/`wait` 相同 shape）。
+
+仅在主机对话变更、workspace 变更，或用户明确要求新上下文时，才应重新 `run`/`start`。不得静默把 task 的 `read` 改成 `write`。
+
+### 3.5 `status`
 
 输入：
 
@@ -178,7 +201,7 @@ type TaskStatus = {
 
 它是快照读取，不阻塞、不返回全量 timeline。
 
-### 3.5 `wait`
+### 3.6 `wait`
 
 输入：
 
@@ -205,7 +228,7 @@ type TaskStatus = {
 
 客户端可以重复 wait 同一 `(taskId, turnId)`。wait 调用断开不影响 daemon-owned 任务。
 
-### 3.6 `cancel`
+### 3.7 `cancel`
 
 输入是严格互斥 union：`{ taskId, turnId }` 取消一个 Turn，或 `{ taskId, recoveryId }` 取消 task-scoped recovery。ID 是 compare-and-cancel 边界；旧 ID 绝不能误取消后来一轮/恢复。
 
@@ -236,7 +259,7 @@ type CancelResult = TurnCancelResult | RecoveryCancelResult;
 
 Turn cancel 等待状态对应的有界流程结束，并总是返回目标 Turn 的不可变 `RunResult`；无法确认退出则 result 为 failed/`cancel_timeout`。目标 turn 已终态时不改变任何状态，直接返回该 result 与 `alreadyTerminal: true`，同时 `taskStatus` 可以合法地是后来 T2 的 running，不能用 task 状态伪造 T1 结果。Recovery cancel 中止 load/process、固化 recovery row，Task 回 interrupted 或 failed，不改写 last Turn。taskId 与 target ID 不匹配或不存在返回标准 MCP invalid params/not found error。
 
-### 3.7 MCP request cancellation
+### 3.8 MCP request cancellation
 
 - daemon 为每次 `run` 保存运行时 binding `(connectionId, requestId) -> (taskId, turnId)`，并在 `turns` 中持久化 owner kind。收到 `notifications/cancelled` 或连接断开时，只有该 turn 尚未终态才发 conditional `task.cancel(taskId, turnId)` 并等待有界收尾；迟到 cancellation 在 T1 结束、T2 开始后不能影响 T2。
 - `start` 在 daemon accepted 之前被取消时撤销 submission；accepted 后已经是 daemon-owned，MCP request cancellation 不终止它，调用方应显式使用 `cancel`。
@@ -281,16 +304,20 @@ Turn cancel 等待状态对应的有界流程结束，并总是返回目标 Turn
 `run/start` description 必须明确：
 
 - 任务会发送给外部 xAI Grok 服务；
+- 委派范围包含编码、调试/根因、CI、review、测试、文档、工作区研究与性能/稳定性/安全分析（最大委派）；
 - `write` 可修改传入 cwd；
-- mode 必须由调用方根据用户意图显式选择；
+- mode 必须由调用方根据用户意图显式选择；后续不得静默 read→write；
 - 进度始终本地持久化；用户打开应用或启用 `active/always` 托盘时可实时查看；
-- `run` 等待最终答复，`start` 适合后台任务。
+- `run` 等待最终答复，`start` 适合后台任务；
+- 返回的 `taskId` 应在同一主机对话 + workspace 内保留，后续用 `continue`。
 
-`status` 的 description 必须要求传回原 taskId；`wait` 必须传回 start/run 对应的 taskId 与 turnId；`cancel` 传 turnId 或 status 给出的 activeRecoveryId。`start` description 要求调用方为一次逻辑提交生成并在 retry 时复用 submissionId。不得在描述中暗示 GrokTask 会提交、推送或绕过工作目录范围。
+`continue` description 必须明确：传入已有 `taskId` + 新 prompt；调用 `task.continue` 而非新建 task；阻塞返回新 turn 的不可变结果；不改变 mode。
+
+`status` 的 description 必须要求传回原 taskId；`wait` 必须传回 start/run/continue 对应的 taskId 与 turnId；`cancel` 传 turnId 或 status 给出的 activeRecoveryId。`start` description 要求调用方为一次逻辑提交生成并在 retry 时复用 submissionId。不得在描述中暗示 GrokTask 会提交、推送或绕过工作目录范围。
 
 ## 6. CLI 与 MCP 一致性
 
-- CLI `run/start/status/wait/cancel` 调用同一个 daemon IPC request，不复制业务逻辑。
+- CLI `run/start/status/wait/cancel` 与 MCP 共用 daemon IPC；MCP `continue` 组合 `task.continue` + `task.wait`。
 - CLI JSON 输出与 MCP structuredContent 使用同一 Rust DTO 和序列化测试。
 - taskId、turnId、状态枚举、error code、answer 拼接规则完全一致。
 - CLI 与 MCP 同时等待同一 `(taskId, turnId)` 时，只订阅状态，不重复启动 Grok。

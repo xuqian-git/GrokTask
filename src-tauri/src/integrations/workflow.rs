@@ -31,58 +31,50 @@ const ASKHUMAN_END: &str = "<!-- AskHuman:end -->";
 /// Default instruction body injected inside the managed block.
 pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
 
-当用户要求写代码、改代码、补测试或按既定方案实现修复时，默认使用 GrokTask，把执行型编码工作委派给 Grok Build。你必须优先考虑调用 `groktask` MCP；除非命中下方“明确豁免”，不要因为“自己也能写”就跳过 GrokTask。
+默认最大委派：凡是需要读写仓库/工作区、写代码、调试、诊断 CI、做 code review、补测试、写文档、做与工作区相关的研究，或做性能/稳定性/安全分析时，优先把工作交给 `groktask` MCP 上的 Grok Build。不要因为“自己也能做”就跳过 GrokTask。
 
-### 角色分工
+### 你（Codex / Claude Code）只做这些
 
-- **你（Codex / Claude Code）**：负责理解需求、规划、架构决策、review、bug 排查、性能分析，并在需要时生成/更新 plan、spec、诊断结论或 checklist。不要把规划、分析或最终判断交给 Grok。
-- **Grok**：按你给出的 plan/文档/spec/诊断结论与验收标准执行编码、修改文件、补测试或实现修复；不替代你的规划、分析、review 与最终判断。
+1. 识别意图、范围与敏感度（是否涉及 secrets/私有数据、是否需要用户授权的外部副作用）。
+2. 判断是否需要显式 plan：复杂多步、有重大取舍、或用户明确要求方案时，由你先写短 plan/验收标准。
+3. 若**不需要** plan：不要自己做诊断、根因分析、review 推理或实现推演——立即委派 Grok。
+4. 保留并执行：需要用户做的产品/权限决策；纯对话问答/总结/翻译（且不依赖工作区实操）；不能安全分享的 secrets/token/隐私；需要用户权威的外部副作用（提交、推送、开 PR、发消息、改共享基础设施等）。
+5. Grok 返回后做**轻量**终审与验证（结果是否达标、是否误伤范围），再向用户交付。不要重复做 Grok 已完成的深度排查或整仓实现。
 
-### 默认触发
+### Grok 负责（通过 groktask）
 
-以下情况默认必须使用 GrokTask：
+编码与改文件、调试与根因定位、CI 诊断与修复、code review、测试、文档、与工作区绑定的调研/搜索、性能/稳定性/安全分析，以及按你给出的 plan/验收标准落地修复。同一主机对话 + 同一 workspace 内复用同一 Grok ACP 会话。
 
-- 需要写代码或修改代码，且不是 1–2 行的微小机械改动；
-- 跨文件编码实现、重构执行、迁移执行、UI 实现、测试补齐或构建修复落地；
-- 你已经完成需求理解、规划、bug 根因分析或性能分析，下一步是按结论改代码；
-- 你已经写出 plan/spec/checklist/诊断结论，下一步进入编码执行。
+### 会话与工具
 
-以下情况不要委派给 GrokTask，由你自己完成：
+- 在同一主机对话与同一 workspace 中保留 `taskId`。
+- **首轮 / 新主机对话 / 新 workspace / 用户明确要求新上下文**：用 `run` 或 `start` 创建任务；`mode` 必须按意图显式选 `read` 或 `write`，之后不要静默把 read 改成 write。
+- **同一 task 的后续请求与 follow-up**：调用 `continue`（传入保留的 `taskId` + 下一轮 prompt），不要再 `run`/`start` 新开 session。
+- 需要改代码、补测试、落地修复：`mode: write`。只需读代码/分析/审查：`mode: read`。
+- 长任务可用 `start`，再用 `status`/`wait`/`cancel`；阻塞短路径用 `run` 或 `continue`。
 
-- review、第二意见、方案判断、架构取舍；
-- bug 排查、失败测试分析、根因定位；
-- 性能分析、稳定性分析、安全风险分析；
-- 需求澄清、规划、spec/checklist 编写。
+### 明确豁免（可不调用 GrokTask）
 
-### 明确豁免
-
-只有以下情况可以不调用 GrokTask，并继续自己处理：
-
-- 纯解释、问答、总结、翻译、文档阅读，不需要代码改动；
-- 微小改动：例如改一个文案、修一个 typo、调整 1–2 行显然代码；
-- 当前任务还处于 review、bug 排查、性能分析或规划阶段，尚未形成明确编码任务；
-- 任务涉及 secrets、token、隐私数据，不能安全发送给 Grok；
-- GrokTask 不可用、返回失败、连续两轮修复仍不收敛；
+- 纯解释、问答、总结、翻译，且不需要读写工作区；
+- 1–2 行显然机械改动（改文案、typo）；
+- 任务涉及 secrets/token/隐私，不能安全发送给 Grok；
+- GrokTask 不可用、返回失败、连续两轮仍不收敛；
 - 用户明确要求“不要用 Grok/GrokTask”。
 
 ### 默认循环
 
-1. 先理解用户需求与当前仓库状态。review、bug 排查、性能分析由你负责；需要时先产出 plan/spec/checklist/诊断结论。
-2. 当下一步是明确的编码执行时，带着计划/诊断结论、相关文件路径与具体验收标准调用 GrokTask：
-   - 需要 Grok 修改代码、补测试或落地修复时使用 `run` 或 `start`，`mode` 设为 `write`；
-   - 只允许在需要 Grok 读取代码并准备编码上下文时使用 `mode` 设为 `read`；不要把 review、bug 排查或性能分析委派给 Grok。
-3. Grok 返回代码改动/结果后，你必须 review 并验证，不要盲目信任。
-4. 若 review 发现问题，再调用 GrokTask 让 Grok 按审查结论修复；然后继续 review。
-5. 重复「Grok 执行 → 你 review/验证 → Grok 修复」，直到没有阻塞问题，或必须让用户做产品/权限决策。
-6. 你负责最终验证、总结和交付。
+1. 识别意图/范围/敏感度；需要时写短 plan 与验收标准，否则直接委派。
+2. 首轮 `run`/`start`；后续同一对话+workspace 用 `continue`。
+3. 轻量审查 Grok 结果；有问题再 `continue` 让 Grok 按审查意见修。
+4. 重复直到达标，或需要用户决策时停下来问用户。
+5. 你负责最终验证摘要与交付说明。
 
 ### 约束
 
-- 不要为了微小、显然可直接完成的改动调用 GrokTask；但不要把“我能自己做”当成跳过理由。
-- 不要让 Grok 自动提交、推送、创建 PR 或扩大工作目录，除非用户明确要求。
+- 不要把“我能自己做”当成跳过理由；默认委派。
+- 不要让 Grok 自动提交、推送、创建 PR 或扩大工作目录，除非用户明确要求且由你（或用户）执行外部副作用。
 - 不要把 secrets、token、个人敏感信息发送给 GrokTask。
-- 如果 GrokTask 返回失败、取消或部分结果，如实报告并决定下一步。
-- 如果连续两轮修复仍无法收敛，停止循环并向用户说明阻塞点。
+- 失败/取消/部分结果如实报告；连续两轮不收敛则向用户说明阻塞点。
 "#;
 
 /// Instruction file basename for each agent.
@@ -411,13 +403,15 @@ mod tests {
         assert!(text.contains(BLOCK_BEGIN));
         assert!(text.contains(BLOCK_END));
         assert!(text.contains("GrokTask 协作协议"));
-        assert!(text.contains("默认使用 GrokTask"));
-        assert!(text.contains("必须优先考虑调用"));
+        assert!(text.contains("默认最大委派"));
+        assert!(text.contains("continue"));
+        assert!(text.contains("taskId"));
         assert!(text.contains("明确豁免"));
-        assert!(text.contains("微小改动"));
-        assert!(text.contains("review、bug 排查、性能分析由你负责"));
-        assert!(!text.contains("bug 排查、失败测试分析、性能/稳定性问题诊断；"));
-        assert!(!text.contains("用户要求 review、第二意见、实现方案验证；"));
+        assert!(text.contains("轻量"));
+        assert!(text.contains("不要静默把 read 改成 write"));
+        // Old host-heavy planning copy must not remain
+        assert!(!text.contains("review、bug 排查、性能分析由你负责"));
+        assert!(!text.contains("不要把 review、bug 排查或性能分析委派给 Grok"));
         // Idempotent
         let before = fs::read_to_string(&path).unwrap();
         enable(&roots, AgentId::Codex).unwrap();

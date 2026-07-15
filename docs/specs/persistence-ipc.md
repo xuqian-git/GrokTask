@@ -350,7 +350,7 @@ task.start
 task.status
 task.wait
 task.cancel
-task.continue          # GUI internal
+task.continue          # ordinary idle follow-up (MCP + GUI); recovery actions are a future extension
 task.snapshot
 task.subscribe
 task.unsubscribe
@@ -366,14 +366,23 @@ settings.update
 health.get
 ```
 
-MCP `run/start/status/wait/cancel` 是这些 request 的薄适配。
+MCP `run/start/status/wait/cancel` 是对应 request 的薄适配。MCP **`continue` 不是 GUI-only**：它调用同一 daemon `task.continue`（`{ taskId, prompt }`）再 `task.wait`，阻塞返回新 turn 的不可变 `RunResult`。桌面 UI 也可直接调用 `task.continue`。
 
 ### 9.1 Turn 与 continue 契约
 
 - `task.start` accepted response 与 `task.run` 内部 accepted event 都包含创建时分配的 `turnId`；`task.wait/task.cancel` 必须同时传 `taskId,turnId`。
-- `task.continue` 仅供 GUI，输入 `{ operationId, taskId, expectedLastTurnId, action, prompt? }`，其中 caller-generated operationId 是持久化幂等键，action 为 `resume | send | retry_interrupted`。`resume` 只 load session、不创建 turn/不重发 prompt；`send` 要求非空新 prompt；`retry_interrupted` 明确复制最近 `failed/daemon_interrupted` turn 的旧 prompt，但创建新的 daemon-owned turnId。同 operationId/输入重试返回原 recovery/result，不重复 load 或创建 turn；不同输入返回 conflict。
-- `idle` 可执行 send；`interrupted` 可执行三种 action，先原子转 recovering 并 load，成功后 resume 回 idle，或为 send/retry 创建新 turn 再 queued/running。load 失败回 interrupted 并保存可行动错误；不会把旧 turn 改回 running。`expectedLastTurnId` 不匹配时返回 conflict，防止双击/另一窗口启动新 turn 后重复发送。
-- read 的启动恢复 scheduler 创建 daemon UUID 的 `auto_resume` recovery，但绝不自动执行 retry；write 必须由用户触发 continue。GUI 请求一旦获得 accepted 新 turn response，该 turn 为 daemon-owned，窗口断开不取消。
+
+#### 当前：普通 idle follow-up（已实现）
+
+- 输入形态：`{ taskId, prompt }`（prompt 非空）。task 须已终态/idle（无活动 turn），mode 不变。
+- 行为：在同一 task 上创建 ordinal N+1 的新 turn；若已有 `acp_session_id` 则 ACP `session/load` 该 id 再 `session/prompt`，禁止 follow-up 静默 `session/new`。
+- 调用方：MCP `continue`（continue + wait）、GUI 发送 follow-up、以及任何 client 角色的 `task.continue`。**不是**“仅 GUI 内部”。
+
+#### 规划中：interrupted recovery 扩展（尚未作为 MCP 表面完整落地）
+
+- 设计目标输入：`{ operationId, taskId, expectedLastTurnId, action, prompt? }`，`action` 为 `resume | send | retry_interrupted`；operationId 作幂等键；`resume` 只 load 不创建 turn；`retry_interrupted` 复制旧 prompt 但新 turnId；`expectedLastTurnId` 防双发。
+- 该条件恢复/幂等设计与上节普通 idle follow-up **分开**：本修复不实现完整 recovery 表面；文档保留以便后续扩展，不得再写成“`task.continue` 仅供 GUI”。
+- read 启动恢复 scheduler 的 auto load、write 须用户显式 resume/send/retry 等 interrupted 规则仍适用 recovery 路径。GUI 一旦 accepted 新 turn，该 turn 为 daemon-owned，窗口断开不取消。
 
 ### 9.2 Lease 契约
 

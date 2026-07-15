@@ -31,7 +31,9 @@ cargo build --manifest-path src-tauri/Cargo.toml --release --features custom-pro
 
 ## 3. MCP 与 CLI
 
-- [ ] MCP 只暴露 `run/start/status/wait/cancel` 五个工具。
+- [ ] MCP 只暴露 `run/start/continue/status/wait/cancel` 六个工具。
+- [ ] `continue` 接受 `taskId`+`prompt`，调用 `task.continue` 并返回新 turn 的不可变 `RunResult`；不新建 task、不改 mode。
+- [ ] 首轮 ACP 使用 `session/new` 并持久化 session id；同一 task 后续 turn 使用 `session/load` 同一 id，禁止 follow-up `session/new`；load 失败或 follow-up 缺 id 时失败且保留 stored id。
 - [ ] `run/start` 缺少 mode、cwd 或 task，或 `start` 缺少合法 submissionId 时在 spawn 前失败。
 - [ ] `mode` 只接受显式 `read|write`，没有默认和文本推断。
 - [ ] `run` 阻塞返回 Markdown、taskId、turnId、实际模型、stopReason 与时间；partial 的 text fallback 明确标成部分结果。
