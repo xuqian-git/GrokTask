@@ -93,7 +93,6 @@ onUnmounted(() => {
   <div class="app-shell" :data-surface="surface" data-testid="app-shell">
     <header v-if="showChrome" class="app-header" data-testid="app-header">
       <h1>{{ title }}</h1>
-      <span class="badge">本地工具</span>
       <nav class="nav" aria-label="主导航" data-testid="app-nav">
         <button
           type="button"
@@ -147,13 +146,6 @@ onUnmounted(() => {
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.01em;
-}
-.badge {
-  font-size: 11px;
-  padding: 2px 8px 3px;
-  border-radius: 999px;
-  background: var(--muted-bg);
-  color: var(--muted-fg);
 }
 .nav {
   margin-left: auto;

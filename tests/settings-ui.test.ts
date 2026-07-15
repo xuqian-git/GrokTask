@@ -271,7 +271,7 @@ describe("Settings UI (Phase 7)", () => {
     window.history.replaceState({}, "", original || "?");
   });
 
-  it("keeps workflow enable/disable available when workspace cwd is missing", async () => {
+  it("tools page is global-only and hides project workspace copy", async () => {
     settings.resetSettingsMocksForTests();
     settings.setMockWorkspaceCwd("");
 
@@ -282,12 +282,11 @@ describe("Settings UI (Phase 7)", () => {
     await w.find('[data-testid="tab-integrations"]').trigger("click");
     await w.vm.$nextTick();
 
-    const cwdLine = w.find('[data-testid="workspace-cwd"]');
-    expect(cwdLine.exists()).toBe(true);
-    expect(cwdLine.text()).toMatch(/无法解析|GrokTask setup/);
-    // Workspace may be missing for task context, but is not the workflow write target.
-    expect(cwdLine.text()).toMatch(/任务上下文|可选/);
-    expect(w.find('[data-testid="workspace-cwd-missing"]').exists()).toBe(true);
+    expect(w.find('[data-testid="workspace-cwd"]').exists()).toBe(false);
+    expect(w.find('[data-testid="workspace-cwd-missing"]').exists()).toBe(
+      false,
+    );
+    expect(w.text()).not.toMatch(/当前工作区|项目工作区|GrokTask setup/);
 
     const card = w.find('[data-testid="agent-card-codex"]');
     const workflowPath = card.find('[data-testid="workflow-path"]').text();
@@ -309,9 +308,6 @@ describe("Settings UI (Phase 7)", () => {
     expect(card.find('[data-testid="workflow-disabled-reason"]').exists()).toBe(
       false,
     );
-    // Must not present `/` or a silent fake writable workspace path.
-    expect(cwdLine.text()).not.toMatch(/(^|\/)\s*\/\s*$/);
-    expect(cwdLine.text()).not.toContain("//");
 
     w.unmount();
   });

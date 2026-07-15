@@ -51,6 +51,7 @@ describe("Phase 7 Chinese shell + History + Popover", () => {
     expect(w.find('[data-testid="app-nav"]').text()).toMatch(/任务记录/);
     expect(w.find('[data-testid="app-nav"]').text()).not.toMatch(/ACP 记录/);
     expect(w.find('[data-testid="app-nav"]').text()).toMatch(/设置/);
+    expect(w.text()).not.toMatch(/本地工具/);
     expect(w.text()).not.toMatch(/Phase 5/);
     expect(w.find('[data-testid="app-header"]').exists()).toBe(true);
 

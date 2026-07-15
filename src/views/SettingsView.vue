@@ -14,7 +14,6 @@ import {
   fetchAgentsStatus,
   fetchDoctorReport,
   fetchSettings,
-  fetchWorkspaceCwd,
   installAgent,
   removeAgent,
   setHistoryLimit,
@@ -27,7 +26,6 @@ const section = ref<Section>("general");
 const settings = ref<SettingsSnapshot | null>(null);
 const agents = ref<AgentIntegrationStatus[]>([]);
 const doctor = ref<DoctorReport | null>(null);
-const workspaceCwd = ref<string>("");
 /** Essentials only (settings / cwd / agents). Never includes doctor probing. */
 const loading = ref(true);
 /** Diagnostics-only doctor_report load; does not block General/Tools. */
@@ -117,14 +115,12 @@ async function refreshEssentials() {
   actionOk.value = null;
   try {
     // Agents status (MCP + global workflow) does not require workspace cwd.
-    const [s, cwd, a] = await Promise.all([
+    const [s, a] = await Promise.all([
       fetchSettings(),
-      fetchWorkspaceCwd().catch(() => ""),
       fetchAgentsStatus(undefined),
     ]);
     settings.value = s;
     historyLimitInput.value = String(s.historyLimit);
-    workspaceCwd.value = cwd;
     agents.value = a.agents;
   } finally {
     loading.value = false;
@@ -200,20 +196,14 @@ async function onInstall(agent: AgentId) {
   busyAgent.value = agent;
   actionMessage.value = null;
   try {
-    const result: ActionResult = await installAgent(
-      agent,
-      workspaceCwd.value || undefined,
-    );
+    const result: ActionResult = await installAgent(agent);
     actionOk.value = result.ok;
     actionMessage.value =
       result.message ?? (result.ok ? "完成。" : "安装失败。");
     if (result.status) {
       patchAgent(result.status);
     } else {
-      const report = await fetchAgentsStatus(
-        undefined,
-        workspaceCwd.value || undefined,
-      );
+      const report = await fetchAgentsStatus(undefined);
       agents.value = report.agents;
     }
   } catch (e) {
@@ -234,20 +224,14 @@ async function onRemove(agent: AgentId) {
   busyAgent.value = agent;
   actionMessage.value = null;
   try {
-    const result: ActionResult = await removeAgent(
-      agent,
-      workspaceCwd.value || undefined,
-    );
+    const result: ActionResult = await removeAgent(agent);
     actionOk.value = result.ok;
     actionMessage.value =
       result.message ?? (result.ok ? "完成。" : "移除失败。");
     if (result.status) {
       patchAgent(result.status);
     } else {
-      const report = await fetchAgentsStatus(
-        undefined,
-        workspaceCwd.value || undefined,
-      );
+      const report = await fetchAgentsStatus(undefined);
       agents.value = report.agents;
     }
   } catch (e) {
@@ -526,21 +510,6 @@ watch(section, (next) => {
         data-testid="section-integrations"
       >
         <h2>工具开关</h2>
-        <p class="workspace-line" data-testid="workspace-cwd">
-          <span class="label">当前工作区（任务上下文 / 可选）</span>
-          <code>{{
-            workspaceCwd || "（无法解析 / 请从项目目录运行 GrokTask setup）"
-          }}</code>
-        </p>
-        <p
-          v-if="!workspaceCwd"
-          class="hint"
-          data-testid="workspace-cwd-missing"
-        >
-          未选定项目工作区。自动触发指令写入全局用户文件，不依赖工作区；任务 cwd
-          可在项目目录中运行 <code>GrokTask setup</code> 后用于上下文展示。
-        </p>
-
         <article
           v-for="card in agents"
           :key="card.agent"
@@ -858,21 +827,6 @@ watch(section, (next) => {
 }
 .integrations-section h2 {
   margin-left: 2px;
-}
-.workspace-line {
-  margin: 0 0 16px;
-  font-size: 12px;
-}
-.workspace-line .label {
-  display: block;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--subtle);
-  margin-bottom: 4px;
-}
-.workspace-line code {
-  word-break: break-all;
 }
 .field {
   border: 1px solid var(--border);
