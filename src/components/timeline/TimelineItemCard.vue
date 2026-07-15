@@ -86,6 +86,22 @@ const permissionLine = computed(() => {
   return safeDisplayLine(props.event.message || props.event.title, "权限请求");
 });
 
+const permissionStatusLabel = computed(() => {
+  if (props.event.kind !== "permission_request") return "";
+  switch (props.event.status) {
+    case "approved":
+      return "自动允许";
+    case "rejected":
+      return "自动拒绝";
+    case "requesting":
+      return "处理中";
+    case "pending":
+      return "待处理";
+    default:
+      return props.event.status ?? "";
+  }
+});
+
 const planLine = computed(() => {
   if (props.event.kind !== "plan_snapshot") return "";
   const n = props.event.planEntries?.length ?? 0;
@@ -191,7 +207,14 @@ const disclosurePartKey = computed(() =>
     class="tl-item"
     :class="[
       `kind-${event.kind}`,
-      { compact, streaming: event.streaming, final: isFinal },
+      {
+        compact,
+        streaming: event.streaming,
+        final: isFinal,
+        'is-lightweight': !['user_message', 'assistant_segment'].includes(
+          event.kind,
+        ),
+      },
     ]"
     :data-kind="event.kind"
     :data-item-id="event.itemId"
@@ -337,7 +360,9 @@ const disclosurePartKey = computed(() =>
       <div class="tl-permission" data-testid="permission-row">
         <span class="tl-icon" aria-hidden="true">🔒</span>
         <span class="tl-message">{{ permissionLine }}</span>
-        <span v-if="event.status" class="tl-badge">{{ event.status }}</span>
+        <span v-if="permissionStatusLabel" class="tl-badge">{{
+          permissionStatusLabel
+        }}</span>
       </div>
     </template>
 
@@ -385,31 +410,51 @@ const disclosurePartKey = computed(() =>
 
 <style scoped>
 .tl-item {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  background: var(--card);
-  margin-bottom: 8px;
+  position: relative;
+  padding: 10px 4px 12px 18px;
+  margin-bottom: 6px;
+  background: transparent;
 }
 .tl-item.compact {
-  padding: 8px 10px;
-  margin-bottom: 6px;
+  padding-top: 7px;
+  padding-bottom: 9px;
+  margin-bottom: 4px;
+}
+.tl-item.is-lightweight::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 14px;
+  bottom: -8px;
+  width: 1px;
+  background: color-mix(in srgb, var(--border) 72%, transparent);
+}
+.tl-item.is-lightweight::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 17px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 32%, var(--bg));
 }
 .tl-item.kind-user_message {
-  border-color: transparent;
-  background: transparent;
   padding-left: 0;
   padding-right: 0;
 }
 .tl-item.kind-reasoning_segment {
-  background: color-mix(in srgb, var(--card) 92%, var(--muted-bg));
+  color: var(--subtle);
 }
 .tl-item.kind-context_notice {
-  background: color-mix(in srgb, var(--card) 85%, #fef3c7);
-  border-style: dashed;
+  color: var(--subtle);
 }
 .tl-item.kind-permission_request {
-  background: color-mix(in srgb, var(--card) 90%, #fee2e2);
+  color: var(--subtle);
+}
+.tl-item.kind-assistant_segment {
+  padding-left: 0;
+  padding-right: 0;
 }
 .tl-head {
   display: flex;
@@ -425,9 +470,9 @@ const disclosurePartKey = computed(() =>
 }
 .tl-icon {
   flex-shrink: 0;
-  width: 1.2em;
+  width: 1.1em;
   text-align: center;
-  opacity: 0.85;
+  opacity: 0.58;
 }
 .tl-icon.status {
   font-size: 12px;
@@ -436,7 +481,7 @@ const disclosurePartKey = computed(() =>
   flex: 1;
   min-width: 0;
   color: var(--fg);
-  font-weight: 500;
+  font-weight: 450;
 }
 .tl-role {
   font-weight: 600;
@@ -458,13 +503,17 @@ const disclosurePartKey = computed(() =>
   opacity: 0.8;
 }
 .tl-toggle {
-  border: 1px solid var(--border);
+  border: 0;
   background: transparent;
   color: var(--subtle);
-  border-radius: 6px;
+  border-radius: 999px;
   padding: 2px 8px;
   font-size: 11px;
   cursor: pointer;
+}
+.tl-toggle:hover {
+  color: var(--muted-fg);
+  background: var(--muted-bg);
 }
 .tl-user {
   padding: 10px 12px;
@@ -489,7 +538,7 @@ const disclosurePartKey = computed(() =>
 .tl-reply,
 .tl-thought,
 .tl-tool {
-  margin-top: 8px;
+  margin-top: 6px;
   font-size: 13px;
   line-height: 1.55;
   color: var(--fg);
@@ -503,6 +552,9 @@ const disclosurePartKey = computed(() =>
   overscroll-behavior: contain;
 }
 .tl-thought.full {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 72%, transparent);
   max-height: 320px;
   overflow: auto;
   overscroll-behavior: contain;
@@ -522,13 +574,16 @@ const disclosurePartKey = computed(() =>
 .path-chip {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 1px 5px;
   border-radius: 4px;
-  background: var(--muted-bg);
+  background: color-mix(in srgb, var(--muted-bg) 70%, transparent);
   color: var(--muted-fg);
 }
 .tl-tool pre {
   margin: 4px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--card) 72%, transparent);
   font-size: 12px;
   overflow: auto;
   max-height: 200px;

@@ -89,6 +89,10 @@ pub enum NormalizedUpdate {
         options: Vec<PermissionOption>,
         raw: Value,
     },
+    PermissionDecision {
+        request_id: String,
+        status: String,
+    },
     CurrentMode {
         mode: Option<String>,
         raw: Value,
@@ -219,6 +223,7 @@ impl NormalizedUpdate {
                 }
             }
             Self::PermissionRequest { summary, .. } => Some(summary.clone()),
+            Self::PermissionDecision { status, .. } => Some(format!("Permission {status}")),
             Self::XaiExtension {
                 stage_title,
                 summary_text,

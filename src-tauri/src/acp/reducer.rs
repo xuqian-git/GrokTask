@@ -390,6 +390,19 @@ impl TurnReducer {
                 };
                 self.push_add(item);
             }
+            NormalizedUpdate::PermissionDecision { request_id, status } => {
+                let item_id = format!("permission:{}:{}", self.turn_id, request_id);
+                let updated =
+                    if let Some(item) = self.items.iter_mut().find(|i| i.item_id == item_id) {
+                        item.status = Some(status);
+                        Some(item.clone())
+                    } else {
+                        None
+                    };
+                if let Some(item) = updated {
+                    self.push_mutation("update", item);
+                }
+            }
             NormalizedUpdate::XaiExtension {
                 stage_title,
                 summary_text,

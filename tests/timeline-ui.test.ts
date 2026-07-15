@@ -37,6 +37,7 @@ describe("timeline UI cards", () => {
     expect(w.text()).not.toContain("session/update");
     expect(w.text()).not.toContain("tool_call_update");
     expect(w.text()).not.toContain('"jsonrpc"');
+    expect(w.find(".tl-item").classes()).toContain("is-lightweight");
   });
 
   it("replaces non-JSON raw ACP labels with semantic fallbacks in card DOM", () => {
@@ -74,6 +75,7 @@ describe("timeline UI cards", () => {
       props: { event: perm, expansion: {} },
     });
     expect(permW.text()).toContain("权限请求");
+    expect(permW.find(".tl-badge").text()).toBe("待处理");
     expect(permW.text()).not.toContain("tool_call_update");
     expect(permW.text()).not.toContain("session/update");
 

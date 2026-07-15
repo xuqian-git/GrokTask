@@ -1054,6 +1054,30 @@ impl TaskManager {
                     }
                     // Response to prompt?
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(response) = permission_response_for(input.mode, &v) {
+                            self.ingest_line(task_id, turn_id, &mut reducer, line);
+                            let status = response
+                                .pointer("/result/outcome/optionId")
+                                .and_then(|v| v.as_str())
+                                .map(permission_option_status)
+                                .unwrap_or("answered");
+                            let request_id = v
+                                .get("id")
+                                .map(|id| match id {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    other => other.to_string(),
+                                })
+                                .unwrap_or_else(|| "unknown".into());
+                            reducer.apply(
+                                crate::acp::types::NormalizedUpdate::PermissionDecision {
+                                    request_id,
+                                    status: status.into(),
+                                },
+                            );
+                            self.persist_reducer(task_id, &mut reducer);
+                            let _ = write_rpc(&mut stdin, &response).await;
+                            continue;
+                        }
                         if v.get("id").and_then(|i| i.as_i64()) == Some(prompt_id) {
                             stop_reason = v
                                 .pointer("/result/stopReason")
@@ -1412,6 +1436,70 @@ async fn write_rpc(stdin: &mut tokio::process::ChildStdin, msg: &serde_json::Val
     Ok(())
 }
 
+fn permission_response_for(mode: TaskMode, msg: &serde_json::Value) -> Option<serde_json::Value> {
+    let method = msg.get("method").and_then(|v| v.as_str())?;
+    if !matches!(
+        method,
+        "session/request_permission" | "session/requestPermission"
+    ) {
+        return None;
+    }
+    let id = msg.get("id")?.clone();
+    let options = msg
+        .pointer("/params/options")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let selected = match mode {
+        // The process is already launched with mode-specific sandbox / deny
+        // rules. In headless operation, answer permission prompts once so the
+        // agent can continue instead of leaving the UI with an unclickable
+        // request. If Grok offers no allow option, reject as a safe fallback.
+        TaskMode::Read | TaskMode::Write => {
+            find_permission_option(options, &["allow_once", "allow_always"])
+                .or_else(|| find_permission_option(options, &["reject_once", "reject_always"]))
+        }
+    }?;
+    Some(json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "outcome": {
+                "outcome": "selected",
+                "optionId": selected
+            }
+        }
+    }))
+}
+
+fn find_permission_option(options: &[serde_json::Value], kinds: &[&str]) -> Option<String> {
+    for kind in kinds {
+        if let Some(id) = options.iter().find_map(|o| {
+            (o.get("kind").and_then(|v| v.as_str()) == Some(*kind))
+                .then(|| {
+                    o.get("optionId")
+                        .or_else(|| o.get("id"))
+                        .and_then(|v| v.as_str())
+                })
+                .flatten()
+                .map(str::to_string)
+        }) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn permission_option_status(option_id: &str) -> &'static str {
+    if option_id.contains("allow") {
+        "approved"
+    } else if option_id.contains("reject") {
+        "rejected"
+    } else {
+        "answered"
+    }
+}
+
 async fn read_rpc_response(
     reader: &mut BufReader<tokio::process::ChildStdout>,
 ) -> Result<serde_json::Value> {
@@ -1571,6 +1659,46 @@ mod tests {
         assert_eq!(
             resolve_grok_executable(Some(&grok.to_string_lossy())).unwrap(),
             grok
+        );
+    }
+
+    #[test]
+    fn permission_requests_are_answered_by_mode() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "session/request_permission",
+            "params": {
+                "options": [
+                    { "kind": "allow_once", "name": "Yes, proceed", "optionId": "allow-once" },
+                    { "kind": "reject_once", "name": "No", "optionId": "reject-once" }
+                ],
+                "toolCall": {
+                    "_meta": {
+                        "x.ai/tool": {
+                            "kind": "execute",
+                            "read_only": false
+                        }
+                    },
+                    "kind": "execute",
+                    "toolCallId": "tool-1"
+                }
+            }
+        });
+
+        assert_eq!(
+            permission_response_for(TaskMode::Read, &request)
+                .unwrap()
+                .pointer("/result/outcome/optionId")
+                .and_then(|v| v.as_str()),
+            Some("allow-once")
+        );
+        assert_eq!(
+            permission_response_for(TaskMode::Write, &request)
+                .unwrap()
+                .pointer("/result/outcome/optionId")
+                .and_then(|v| v.as_str()),
+            Some("allow-once")
         );
     }
 }
