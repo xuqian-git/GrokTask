@@ -31,22 +31,28 @@ const ASKHUMAN_END: &str = "<!-- AskHuman:end -->";
 /// Default instruction body injected inside the managed block.
 pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
 
-当用户要求实现、重构、排查、修复、调试或 review 代码时，默认使用 GrokTask，把执行型工作委派给 Grok Build。你必须优先考虑调用 `groktask` MCP；除非命中下方“明确豁免”，不要因为“自己也能写”就跳过 GrokTask。
+当用户要求写代码、改代码、补测试或按既定方案实现修复时，默认使用 GrokTask，把执行型编码工作委派给 Grok Build。你必须优先考虑调用 `groktask` MCP；除非命中下方“明确豁免”，不要因为“自己也能写”就跳过 GrokTask。
 
 ### 角色分工
 
-- **你（Codex / Claude Code）**：负责理解需求、规划、架构决策，并在需要时生成/更新 plan、spec 或 checklist。不要把规划职责交给 Grok。
-- **Grok**：按你给出的 plan/文档/spec 与验收标准执行实现、调试、重构或审查；不替代你的规划与最终判断。
+- **你（Codex / Claude Code）**：负责理解需求、规划、架构决策、review、bug 排查、性能分析，并在需要时生成/更新 plan、spec、诊断结论或 checklist。不要把规划、分析或最终判断交给 Grok。
+- **Grok**：按你给出的 plan/文档/spec/诊断结论与验收标准执行编码、修改文件、补测试或实现修复；不替代你的规划、分析、review 与最终判断。
 
 ### 默认触发
 
 以下情况默认必须使用 GrokTask：
 
-- 需要修改代码，且不是 1–2 行的微小机械改动；
-- 跨文件修改、重构、迁移、UI 调整、测试补齐或构建修复；
-- bug 排查、失败测试分析、性能/稳定性问题诊断；
-- 用户要求 review、第二意见、实现方案验证；
-- 你已经写出 plan/spec/checklist，下一步进入执行。
+- 需要写代码或修改代码，且不是 1–2 行的微小机械改动；
+- 跨文件编码实现、重构执行、迁移执行、UI 实现、测试补齐或构建修复落地；
+- 你已经完成需求理解、规划、bug 根因分析或性能分析，下一步是按结论改代码；
+- 你已经写出 plan/spec/checklist/诊断结论，下一步进入编码执行。
+
+以下情况不要委派给 GrokTask，由你自己完成：
+
+- review、第二意见、方案判断、架构取舍；
+- bug 排查、失败测试分析、根因定位；
+- 性能分析、稳定性分析、安全风险分析；
+- 需求澄清、规划、spec/checklist 编写。
 
 ### 明确豁免
 
@@ -54,16 +60,17 @@ pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
 
 - 纯解释、问答、总结、翻译、文档阅读，不需要代码改动；
 - 微小改动：例如改一个文案、修一个 typo、调整 1–2 行显然代码；
+- 当前任务还处于 review、bug 排查、性能分析或规划阶段，尚未形成明确编码任务；
 - 任务涉及 secrets、token、隐私数据，不能安全发送给 Grok；
 - GrokTask 不可用、返回失败、连续两轮修复仍不收敛；
 - 用户明确要求“不要用 Grok/GrokTask”。
 
 ### 默认循环
 
-1. 先理解用户需求与当前仓库状态。对非微小任务，先产出或更新清晰的 plan/spec/checklist。
-2. 带着该文档/计划上下文、相关文件路径与具体验收标准调用 GrokTask：
-   - 需要 Grok 修改代码时使用 `run` 或 `start`，`mode` 设为 `write`；
-   - 只需要第二意见、审查或诊断时使用 `mode` 设为 `read`。
+1. 先理解用户需求与当前仓库状态。review、bug 排查、性能分析由你负责；需要时先产出 plan/spec/checklist/诊断结论。
+2. 当下一步是明确的编码执行时，带着计划/诊断结论、相关文件路径与具体验收标准调用 GrokTask：
+   - 需要 Grok 修改代码、补测试或落地修复时使用 `run` 或 `start`，`mode` 设为 `write`；
+   - 只允许在需要 Grok 读取代码并准备编码上下文时使用 `mode` 设为 `read`；不要把 review、bug 排查或性能分析委派给 Grok。
 3. Grok 返回代码改动/结果后，你必须 review 并验证，不要盲目信任。
 4. 若 review 发现问题，再调用 GrokTask 让 Grok 按审查结论修复；然后继续 review。
 5. 重复「Grok 执行 → 你 review/验证 → Grok 修复」，直到没有阻塞问题，或必须让用户做产品/权限决策。
@@ -408,6 +415,9 @@ mod tests {
         assert!(text.contains("必须优先考虑调用"));
         assert!(text.contains("明确豁免"));
         assert!(text.contains("微小改动"));
+        assert!(text.contains("review、bug 排查、性能分析由你负责"));
+        assert!(!text.contains("bug 排查、失败测试分析、性能/稳定性问题诊断；"));
+        assert!(!text.contains("用户要求 review、第二意见、实现方案验证；"));
         // Idempotent
         let before = fs::read_to_string(&path).unwrap();
         enable(&roots, AgentId::Codex).unwrap();

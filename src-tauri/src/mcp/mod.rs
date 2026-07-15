@@ -123,12 +123,12 @@ pub fn tool_defs() -> Vec<Value> {
     vec![
         json!({
             "name": "run",
-            "description": "delegate an implementation, debugging, refactor, or review task to external xAI Grok Build and block until the turn finishes. Use for non-trivial code work after the host agent has planned the task. mode must be explicit read|write (write may modify cwd). Progress is persisted locally. Prefer start for long background work.",
+            "description": "delegate a planned coding implementation, file modification, test-writing, or fix-implementation task to external xAI Grok Build and block until the turn finishes. Use after the host agent has completed planning/analysis and has concrete acceptance criteria. mode must be explicit read|write (write may modify cwd). Progress is persisted locally. Prefer start for long background code work.",
             "inputSchema": task_input_schema(false)
         }),
         json!({
             "name": "start",
-            "description": "delegate a long-running implementation, debugging, refactor, or review task to external xAI Grok Build and return immediately with taskId+turnId. Use when the host agent should continue monitoring/reviewing instead of blocking. Requires caller-generated submissionId (UUID) for exactly-once retry. mode must be explicit read|write. Disconnect does not cancel the task — use cancel.",
+            "description": "delegate a long-running planned coding implementation, file modification, test-writing, or fix-implementation task to external xAI Grok Build and return immediately with taskId+turnId. Use after the host agent has completed planning/analysis and should monitor the resulting code changes. Requires caller-generated submissionId (UUID) for exactly-once retry. mode must be explicit read|write. Disconnect does not cancel the task — use cancel.",
             "inputSchema": task_input_schema(true)
         }),
         json!({
@@ -395,10 +395,14 @@ mod tests {
         assert!(d.contains("read") && d.contains("write"));
         assert!(d.contains("delegate") || d.contains("委派"));
         assert!(d.contains("implementation") || d.contains("实现"));
+        assert!(!d.contains("debugging"));
+        assert!(!d.contains("review"));
         let start = tools.iter().find(|t| t["name"] == "start").unwrap();
         let start_d = start["description"].as_str().unwrap();
         assert!(start_d.contains("long") || start_d.contains("background"));
         assert!(start_d.contains("delegate") || start_d.contains("委派"));
+        assert!(!start_d.contains("debugging"));
+        assert!(!start_d.contains("review"));
     }
 
     #[test]
