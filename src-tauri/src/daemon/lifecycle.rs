@@ -347,7 +347,7 @@ pub fn reclaim_stale_daemon_state() -> io::Result<bool> {
 fn process_is_zombie(pid: u32) -> Option<bool> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        return process_is_zombie_linux(pid);
+        process_is_zombie_linux(pid)
     }
     #[cfg(target_os = "macos")]
     {
