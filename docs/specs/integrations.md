@@ -79,18 +79,34 @@ GrokTask agents mode codex mcp
 GrokTask agents mode codex none
 GrokTask agents mode claude mcp
 GrokTask agents mode claude none
+GrokTask agents workflow status [codex|claude]
+GrokTask agents workflow enable codex|claude
+GrokTask agents workflow disable codex|claude
 ```
 
 `GrokTask setup` 打开单实例 Settings 窗口的 Integrations 页，不在命令行中偷偷修改配置。
 
+### 6.1 协作指令（全局用户级）
+
+工具开关的「协作指令」写入 **全局用户指令文件**（不是项目级）：
+
+| Agent | 指令文件 |
+| --- | --- |
+| Codex | `~/.codex/AGENTS.md`（不写 `AGENTS.override.md`） |
+| Claude Code | `~/.claude/CLAUDE.md` |
+
+- 状态 / 启用 / 禁用不依赖项目 workspace 或 `--cwd`（`--cwd` 可保留兼容，但不参与目标解析）。
+- 只编辑 GrokTask managed block；保留 AskHuman 与其它用户内容；标记畸形时拒绝写入。
+- 需要时创建父目录（`.codex/`、`.claude/`）。
+- MCP 配置路径不变：`~/.codex/config.toml`、`~/.claude.json`。
+
 设置页每个 Agent card 显示：
 
-- 检测状态；
-- 配置文件路径；
+- MCP 检测状态与安装/更新/移除；
+- 协作指令状态与启用/禁用；
+- 配置文件路径与全局指令文件路径（标注「指令文件（全局）」）；
 - 将写入的当前 binary path；
-- Install / Update / Remove；
-- Open file / Reveal file；
-- 修改后需要重启或重新载入 MCP 的提示。
+- 修改后需要重启或重新载入 MCP / 新开会话的提示。
 
 所有写操作在 UI 中显示预期影响；成功后重新读取文件验证，不只相信 write 返回值。
 

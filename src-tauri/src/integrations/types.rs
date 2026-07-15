@@ -52,7 +52,8 @@ impl IntegrationStatus {
     }
 }
 
-/// Project-level workflow instruction injection status (AGENTS.md / CLAUDE.md).
+/// Global user-level workflow instruction injection status
+/// (`~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowStatus {
@@ -99,10 +100,10 @@ pub struct AgentIntegrationStatus {
     pub can_write: bool,
     /// True when Remove may safely write (entry may or may not exist).
     pub can_remove: bool,
-    /// Workflow instruction injection status (project AGENTS.md / CLAUDE.md).
+    /// Workflow instruction injection status (global AGENTS.md / CLAUDE.md).
     #[serde(default = "default_workflow_status")]
     pub workflow_status: WorkflowStatus,
-    /// Absolute path of the project instruction file for workflow injection.
+    /// Absolute path of the global user instruction file for workflow injection.
     #[serde(default)]
     pub workflow_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

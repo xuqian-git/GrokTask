@@ -64,15 +64,19 @@ Settings must show both layers independently, because advanced users may want MC
 
 Implement safe managed-block injection. Do not silently rewrite unrelated user content.
 
+Targets are **global user instruction files** (not project-level). Settings → 工具开关 enables a default workflow for Codex and Claude Code across projects.
+
 ### Codex
 
-Primary target for this repository/workspace:
+Primary target (Codex home; default `~/.codex`, or under the configured/test home root):
 
 ```text
-<workspace>/AGENTS.md
+<home>/.codex/AGENTS.md
 ```
 
-If the file does not exist, create it.
+Codex also supports `AGENTS.override.md`; this app only manages `AGENTS.md` and never writes `AGENTS.override.md`.
+
+If the file does not exist, create it (including parent `.codex/` as needed).
 
 If the file exists, preserve all user content and insert/update only the managed block:
 
@@ -86,10 +90,10 @@ Do not remove or alter AskHuman managed blocks.
 
 ### Claude Code
 
-Primary target for this repository/workspace:
+Primary target (user-level, Anthropic docs):
 
 ```text
-<workspace>/CLAUDE.md
+<home>/.claude/CLAUDE.md
 ```
 
 Use the same managed block markers:
@@ -100,11 +104,11 @@ Use the same managed block markers:
 <!-- GrokTask:end -->
 ```
 
-If Claude Code's actual preferred project-instruction filename is already represented in this codebase or AskHuman reference, use that. Otherwise implement `CLAUDE.md` and keep the path visible in the UI so users can verify it.
+MCP install config remains unchanged: Codex `~/.codex/config.toml`, Claude `~/.claude.json`.
 
 ### Scope
 
-This phase may implement project-level injection only. Global injection can be shown as disabled/future if necessary. The UI must be honest about which file is being modified.
+Workflow status/enable/disable are global-user scoped via `IntegrationRoots` (tests use temp homes). They must not require a project workspace/`--cwd` for target resolution. The UI labels the path as global/user-level and must not claim project-level injection for this feature.
 
 ## Default managed instruction content
 
@@ -224,7 +228,7 @@ GrokTask agents workflow disable codex|claude [--cwd PATH]
 
 The UI can call equivalent Tauri commands.
 
-Default `--cwd` should be current working directory for CLI. For the desktop UI, use the app's current workspace when available; if not available, display the target as the current repository path used by this app build/session and make it visible. Do not write to an invisible surprising path.
+`--cwd` may remain accepted for backward compatibility but is **not** used to resolve global instruction targets. Workflow status and enable/disable work without a workspace. Paths shown in CLI/UI are always the global files under the integration home (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`).
 
 ### Safety
 
@@ -240,22 +244,24 @@ Default `--cwd` should be current working directory for CLI. For the desktop UI,
 Add deterministic tests for:
 
 1. Managed block injection
-   - create missing AGENTS.md / CLAUDE.md;
+   - create missing global `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` under temp home;
    - append to existing file;
    - update old GrokTask block;
    - disable removes only GrokTask block;
    - malformed marker refuses to write;
-   - AskHuman block is preserved.
+   - AskHuman block is preserved;
+   - never writes `AGENTS.override.md`.
 
 2. Integration status
    - MCP installed but workflow disabled;
    - MCP installed + workflow enabled;
    - workflow outdated;
-   - invalid instruction file.
+   - invalid instruction file;
+   - status reports global paths without workspace.
 
 3. CLI
-   - workflow status/enable/disable routes work with temp cwd;
-   - no real user config is touched during tests.
+   - workflow status/enable/disable routes work with temp IntegrationRoots home;
+   - no real user config / real home instruction files are touched during tests.
 
 4. Frontend
    - Chinese labels render by default;
@@ -279,15 +285,15 @@ Add deterministic tests for:
 - Do not change GrokTask into a Codex plugin.
 - Do not add localhost dashboard back.
 - Do not auto-enable workflow instructions when the user only installs MCP.
-- Do not silently write to global instruction files.
+- Write only the GrokTask managed block in the documented global instruction files; never rewrite unrelated user content or `AGENTS.override.md`.
 - Prefer simple, reliable UI over decorative complexity.
 
 ## Acceptance criteria
 
 This phase is acceptable when:
 
-- a user can open GrokTask, see Chinese UI, and clearly enable/disable Codex/Claude MCP plus workflow instructions;
-- the target AGENTS.md / CLAUDE.md receives a safe GrokTask managed block;
+- a user can open GrokTask, see Chinese UI, and clearly enable/disable Codex/Claude MCP plus global workflow instructions;
+- the global target `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` receives a safe GrokTask managed block;
 - a host agent reading that block would know to call GrokTask for implementation/review/fix loops;
 - the app has an ACP records/history view that is useful without raw JSON noise;
 - macOS menu-bar popover opens and shows recent/live activity;

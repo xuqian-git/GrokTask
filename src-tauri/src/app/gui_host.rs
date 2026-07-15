@@ -652,8 +652,9 @@ fn remember_workspace_cwd(app: &AppHandle, cwd: Option<&str>) {
     }
 }
 
-/// Trusted project cwd for Settings workflow writes. `None` when the host was
-/// opened without `GrokTask setup` (Finder / tray) — never the process cwd.
+/// Trusted project cwd for Settings task/MCP context display. `None` when the
+/// host was opened without `GrokTask setup` (Finder / tray) — never the process
+/// cwd. Workflow instruction injection is global and does not use this path.
 pub fn selected_workspace_cwd(app: &AppHandle) -> Option<String> {
     let state = app.try_state::<HostState>()?;
     let guard = state.selected_workspace_cwd.lock().ok()?;

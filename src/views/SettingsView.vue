@@ -111,20 +111,15 @@ async function refreshEssentials() {
   actionMessage.value = null;
   actionOk.value = null;
   try {
+    // Agents status (MCP + global workflow) does not require workspace cwd.
     const [s, cwd, a] = await Promise.all([
       fetchSettings(),
       fetchWorkspaceCwd().catch(() => ""),
-      fetchAgentsStatus(undefined, undefined),
+      fetchAgentsStatus(undefined),
     ]);
     settings.value = s;
     workspaceCwd.value = cwd;
-    // Re-fetch with workspace so workflow paths are accurate.
-    if (cwd) {
-      const report = await fetchAgentsStatus(undefined, cwd);
-      agents.value = report.agents;
-    } else {
-      agents.value = a.agents;
-    }
+    agents.value = a.agents;
   } finally {
     loading.value = false;
   }
@@ -249,12 +244,7 @@ async function onRemove(agent: AgentId) {
 }
 
 async function onWorkflowEnable(agent: AgentId) {
-  if (!workspaceCwd.value) {
-    actionOk.value = false;
-    actionMessage.value =
-      "无法解析工作区路径；请从项目目录运行 GrokTask setup。";
-    return;
-  }
+  // Global user instruction files — workspace cwd is not required.
   const card = agents.value.find((a) => a.agent === agent);
   if (card && !card.canWriteWorkflow) {
     actionOk.value = false;
@@ -264,17 +254,14 @@ async function onWorkflowEnable(agent: AgentId) {
   busyWorkflow.value = agent;
   actionMessage.value = null;
   try {
-    const result = await enableWorkflow(agent, workspaceCwd.value || undefined);
+    const result = await enableWorkflow(agent);
     actionOk.value = result.ok;
     actionMessage.value =
       result.message ?? (result.ok ? "已启用协作指令。" : "启用失败。");
     if (result.status) {
       patchAgent(result.status);
     } else {
-      const report = await fetchAgentsStatus(
-        undefined,
-        workspaceCwd.value || undefined,
-      );
+      const report = await fetchAgentsStatus(undefined);
       agents.value = report.agents;
     }
   } catch (e) {
@@ -286,12 +273,7 @@ async function onWorkflowEnable(agent: AgentId) {
 }
 
 async function onWorkflowDisable(agent: AgentId) {
-  if (!workspaceCwd.value) {
-    actionOk.value = false;
-    actionMessage.value =
-      "无法解析工作区路径；请从项目目录运行 GrokTask setup。";
-    return;
-  }
+  // Global user instruction files — workspace cwd is not required.
   const card = agents.value.find((a) => a.agent === agent);
   if (card && !card.canWriteWorkflow) {
     actionOk.value = false;
@@ -301,20 +283,14 @@ async function onWorkflowDisable(agent: AgentId) {
   busyWorkflow.value = agent;
   actionMessage.value = null;
   try {
-    const result = await disableWorkflow(
-      agent,
-      workspaceCwd.value || undefined,
-    );
+    const result = await disableWorkflow(agent);
     actionOk.value = result.ok;
     actionMessage.value =
       result.message ?? (result.ok ? "已禁用协作指令。" : "禁用失败。");
     if (result.status) {
       patchAgent(result.status);
     } else {
-      const report = await fetchAgentsStatus(
-        undefined,
-        workspaceCwd.value || undefined,
-      );
+      const report = await fetchAgentsStatus(undefined);
       agents.value = report.agents;
     }
   } catch (e) {
@@ -496,24 +472,22 @@ watch(section, (next) => {
         <p class="intro">
           两层集成相互独立：<strong>MCP 服务</strong>只让 Agent 能调用
           <code>groktask</code>
-          工具；<strong>协作指令</strong>写入项目指令文件，引导 Agent
+          工具；<strong>协作指令</strong>写入全局用户指令文件，引导 Agent
           在编码时主动使用 GrokTask。仅安装 MCP 不会自动启用协作指令。
         </p>
         <p class="workspace-line" data-testid="workspace-cwd">
-          <span class="label">当前工作区（项目指令写入位置）</span>
+          <span class="label">当前工作区（任务上下文 / 可选）</span>
           <code>{{
             workspaceCwd || "（无法解析 / 请从项目目录运行 GrokTask setup）"
           }}</code>
         </p>
         <p
           v-if="!workspaceCwd"
-          class="hint warn"
+          class="hint"
           data-testid="workspace-cwd-missing"
         >
-          未选定项目工作区。请在项目目录中运行
-          <code>GrokTask setup</code>
-          后再启用/禁用协作指令；菜单栏或 Finder
-          打开时不会使用进程当前目录作为写入目标。
+          未选定项目工作区。协作指令写入全局用户文件，不依赖工作区；任务 cwd
+          可在项目目录中运行 <code>GrokTask setup</code> 后用于上下文展示。
         </p>
 
         <article
@@ -611,7 +585,7 @@ watch(section, (next) => {
             </div>
             <dl class="card-meta">
               <div>
-                <dt>指令文件（项目级）</dt>
+                <dt>指令文件（全局）</dt>
                 <dd data-testid="workflow-path">
                   {{ card.workflowPath }}
                 </dd>
@@ -628,9 +602,7 @@ watch(section, (next) => {
                 type="button"
                 data-testid="workflow-enable"
                 :disabled="
-                  !workspaceCwd ||
-                  !card.canWriteWorkflow ||
-                  busyWorkflow === card.agent
+                  !card.canWriteWorkflow || busyWorkflow === card.agent
                 "
                 @click="onWorkflowEnable(card.agent)"
               >
@@ -647,9 +619,7 @@ watch(section, (next) => {
                 class="danger"
                 data-testid="workflow-disable"
                 :disabled="
-                  !workspaceCwd ||
-                  !card.canWriteWorkflow ||
-                  busyWorkflow === card.agent
+                  !card.canWriteWorkflow || busyWorkflow === card.agent
                 "
                 @click="onWorkflowDisable(card.agent)"
               >
@@ -657,23 +627,21 @@ watch(section, (next) => {
               </button>
             </div>
             <p
-              v-if="!workspaceCwd || !card.canWriteWorkflow"
+              v-if="!card.canWriteWorkflow"
               class="hint warn"
               data-testid="workflow-disabled-reason"
             >
               {{
-                !workspaceCwd
-                  ? "无法解析工作区路径；请从项目目录运行 GrokTask setup。"
-                  : card.workflowDetail ||
-                    "无法安全写入指令文件（标记异常或路径不可用）。"
+                card.workflowDetail ||
+                "无法安全写入指令文件（标记异常或路径不可用）。"
               }}
             </p>
             <p class="hint reminder" data-testid="workflow-reminder">
-              仅写入托管区块（
+              写入用户级全局指令文件中的托管区块（
               <code>GrokTask:begin</code>
               …
               <code>end</code>
-              ），不会改动 AskHuman 或其它用户内容。全局指令注入尚未支持。
+              ），不会改动 AskHuman 或其它用户内容。
             </p>
           </div>
         </article>

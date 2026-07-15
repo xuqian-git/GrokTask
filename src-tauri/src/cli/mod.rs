@@ -856,8 +856,8 @@ fn cmd_app(args: &[String]) -> i32 {
 }
 
 /// Build the navigation command for `GrokTask setup` (Settings → 工具开关).
-/// Carries the caller's project cwd so the GUI can write workflow instructions
-/// there; never falls back to the GUI process cwd.
+/// Carries the caller's project cwd for task/MCP context display; workflow
+/// instruction injection is global and does not use this path.
 fn setup_nav_command(cwd: Option<std::path::PathBuf>) -> crate::ipc::protocol::GuiNavCommand {
     crate::ipc::protocol::GuiNavCommand::OpenSettings {
         section: Some("integrations".into()),
@@ -895,35 +895,20 @@ fn cmd_agents(args: &[String]) -> i32 {
     let json_out = args.iter().any(|a| a == "--json");
     match args[0].as_str() {
         "status" => {
-            let cwd = parse_cwd_flag(args);
-            let filter = args.get(1).and_then(|s| {
-                if s == "--json" || s == "--cwd" {
-                    None
-                } else {
-                    crate::integrations::AgentId::parse(s)
-                }
-            });
-            if let Some(s) = args.get(1) {
-                if s != "--json" && s != "--cwd" && filter.is_none() {
-                    eprint_line(&format!(
-                        "error: unknown agent `{s}`; expected codex|claude"
-                    ));
+            // --cwd accepted for backward compatibility; workflow paths are global.
+            let _cwd = parse_cwd_flag(args);
+            let filter = match parse_optional_agent_filter(args) {
+                Ok(f) => f,
+                Err(msg) => {
+                    eprint_line(&msg);
                     return 1;
                 }
-            }
+            };
             let command = crate::integrations::current_exe_path()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "GrokTask".into());
             let roots = integration_roots_for_cli();
-            let workspace = match crate::integrations::resolve_workspace(cwd.as_deref()) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    eprint_line(&format!("warning: workspace unavailable: {e}"));
-                    None
-                }
-            };
-            let report =
-                crate::integrations::status_report(&roots, filter, &command, workspace.as_deref());
+            let report = crate::integrations::status_report(&roots, filter, &command);
             if json_out {
                 print_line(&serde_json::to_string(&report).unwrap_or_else(|_| "{}".into()));
             } else {
@@ -1016,6 +1001,10 @@ fn cmd_agents(args: &[String]) -> i32 {
 }
 
 /// `agents workflow status|enable|disable [agent] [--cwd PATH]`
+///
+/// Workflow targets are global user instruction files under the integration
+/// home (`~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`). `--cwd` is accepted for
+/// backward compatibility but ignored for target resolution.
 fn cmd_agents_workflow(args: &[String], json_out: bool) -> i32 {
     if args.is_empty() {
         eprint_line(
@@ -1024,32 +1013,18 @@ fn cmd_agents_workflow(args: &[String], json_out: bool) -> i32 {
         return 1;
     }
     let action = args[0].as_str();
-    let cwd = parse_cwd_flag(args);
-    let workspace = match crate::integrations::resolve_workspace(cwd.as_deref()) {
-        Ok(p) => p,
-        Err(e) => {
-            eprint_line(&format!("error: {e}"));
-            return 1;
-        }
-    };
+    let _cwd = parse_cwd_flag(args);
+    let roots = integration_roots_for_cli();
 
     match action {
         "status" => {
-            let filter = args.get(1).and_then(|s| {
-                if s == "--json" || s == "--cwd" {
-                    None
-                } else {
-                    crate::integrations::AgentId::parse(s)
-                }
-            });
-            if let Some(s) = args.get(1) {
-                if s != "--json" && s != "--cwd" && filter.is_none() {
-                    eprint_line(&format!(
-                        "error: unknown agent `{s}`; expected codex|claude"
-                    ));
+            let filter = match parse_optional_agent_filter(args) {
+                Ok(f) => f,
+                Err(msg) => {
+                    eprint_line(&msg);
                     return 1;
                 }
-            }
+            };
             let agents: Vec<crate::integrations::AgentId> = match filter {
                 Some(a) => vec![a],
                 None => vec![
@@ -1059,7 +1034,7 @@ fn cmd_agents_workflow(args: &[String], json_out: bool) -> i32 {
             };
             let mut rows = Vec::new();
             for agent in agents {
-                let st = crate::integrations::workflow_status(&workspace, agent);
+                let st = crate::integrations::workflow_status(&roots, agent);
                 if json_out {
                     rows.push(serde_json::json!({
                         "agent": agent.as_str(),
@@ -1106,9 +1081,9 @@ fn cmd_agents_workflow(args: &[String], json_out: bool) -> i32 {
                 }
             };
             let result = if action == "enable" {
-                crate::integrations::workflow_enable(&workspace, agent)
+                crate::integrations::workflow_enable(&roots, agent)
             } else {
-                crate::integrations::workflow_disable(&workspace, agent)
+                crate::integrations::workflow_disable(&roots, agent)
             };
             match result {
                 Ok(st) => {
@@ -1132,7 +1107,7 @@ fn cmd_agents_workflow(args: &[String], json_out: bool) -> i32 {
                         print_line(&format!("path={}", st.path));
                         if action == "enable" {
                             print_line(
-                                "note: host agent reads project instruction files on next session; restart agent if needed",
+                                "note: host agent reads global user instruction files on next session; restart agent if needed",
                             );
                         }
                     }
@@ -1166,6 +1141,31 @@ fn parse_cwd_flag(args: &[String]) -> Option<std::path::PathBuf> {
         i += 1;
     }
     None
+}
+
+/// True for flags that may appear where an optional agent name is expected.
+///
+/// Includes both `--cwd PATH` and `--cwd=PATH` forms so equals-style cwd is
+/// not mistaken for an unknown agent.
+fn is_agents_status_flag(s: &str) -> bool {
+    s == "--json" || s == "--cwd" || s.starts_with("--cwd=")
+}
+
+/// Optional agent filter at `args[1]` for `agents status` / `agents workflow status`.
+///
+/// Flags (`--json`, `--cwd`, `--cwd=PATH`) yield `Ok(None)`. Unknown non-flag
+/// positionals yield `Err` with a user-facing message.
+fn parse_optional_agent_filter(
+    args: &[String],
+) -> Result<Option<crate::integrations::AgentId>, String> {
+    match args.get(1).map(|s| s.as_str()) {
+        None => Ok(None),
+        Some(s) if is_agents_status_flag(s) => Ok(None),
+        Some(s) => match crate::integrations::AgentId::parse(s) {
+            Some(a) => Ok(Some(a)),
+            None => Err(format!("error: unknown agent `{s}`; expected codex|claude")),
+        },
+    }
 }
 
 /// Integration roots for CLI. Honors `GROKTASK_AGENT_HOME` so tests never touch real ~/.codex.
@@ -1262,7 +1262,7 @@ mod tests {
         let prev = std::env::var_os("GROKTASK_AGENT_HOME");
         std::env::set_var("GROKTASK_AGENT_HOME", tmp.path());
         let roots = integration_roots_for_cli();
-        let report = crate::integrations::status_report(&roots, None, "/tmp/GrokTask", None);
+        let report = crate::integrations::status_report(&roots, None, "/tmp/GrokTask");
         assert_eq!(report.agents.len(), 2);
         assert_eq!(
             report.agents[0].status,
@@ -1341,22 +1341,22 @@ mod tests {
     }
 
     #[test]
-    fn agents_workflow_enable_disable_temp_cwd() {
+    fn agents_workflow_enable_disable_temp_home() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let ws = tmp.path();
-        // Must not touch real user config; only temp workspace files.
-        let st =
-            crate::integrations::workflow_enable(ws, crate::integrations::AgentId::Codex).unwrap();
+        let roots = crate::integrations::IntegrationRoots::from_home(tmp.path());
+        // Must not touch real user home; only temp IntegrationRoots.
+        let st = crate::integrations::workflow_enable(&roots, crate::integrations::AgentId::Codex)
+            .unwrap();
         assert_eq!(st.status, crate::integrations::WorkflowStatus::Enabled);
-        assert!(ws.join("AGENTS.md").exists());
-        let st =
-            crate::integrations::workflow_disable(ws, crate::integrations::AgentId::Codex).unwrap();
+        assert!(tmp.path().join(".codex").join("AGENTS.md").exists());
+        let st = crate::integrations::workflow_disable(&roots, crate::integrations::AgentId::Codex)
+            .unwrap();
         assert_eq!(st.status, crate::integrations::WorkflowStatus::NotEnabled);
         // Claude path
-        let st =
-            crate::integrations::workflow_enable(ws, crate::integrations::AgentId::Claude).unwrap();
+        let st = crate::integrations::workflow_enable(&roots, crate::integrations::AgentId::Claude)
+            .unwrap();
         assert_eq!(st.status, crate::integrations::WorkflowStatus::Enabled);
-        assert!(ws.join("CLAUDE.md").exists());
+        assert!(tmp.path().join(".claude").join("CLAUDE.md").exists());
     }
 
     #[test]
@@ -1376,5 +1376,85 @@ mod tests {
             parse_cwd_flag(&args2),
             Some(std::path::PathBuf::from("/tmp/x"))
         );
+    }
+
+    #[test]
+    fn workflow_status_optional_agent_accepts_cwd_equals_form() {
+        // `agents workflow status --cwd=/tmp/x` must not treat the flag as an agent.
+        assert_eq!(
+            parse_optional_agent_filter(&["status".into(), "--cwd=/tmp/x".into()]),
+            Ok(None)
+        );
+        assert_eq!(
+            parse_optional_agent_filter(&["status".into(), "--cwd".into(), "/tmp/x".into()]),
+            Ok(None)
+        );
+        assert_eq!(
+            parse_optional_agent_filter(&[
+                "status".into(),
+                "codex".into(),
+                "--cwd".into(),
+                "/tmp/x".into()
+            ]),
+            Ok(Some(crate::integrations::AgentId::Codex))
+        );
+        assert_eq!(
+            parse_optional_agent_filter(&["status".into(), "claude".into(), "--cwd=/tmp/x".into()]),
+            Ok(Some(crate::integrations::AgentId::Claude))
+        );
+        assert_eq!(
+            parse_optional_agent_filter(&["status".into(), "--json".into()]),
+            Ok(None)
+        );
+        assert!(
+            parse_optional_agent_filter(&["status".into(), "unknown".into()])
+                .unwrap_err()
+                .contains("unknown agent")
+        );
+    }
+
+    #[test]
+    fn agents_workflow_status_accepts_cwd_forms_end_to_end() {
+        let _g = crate::paths::test_env_lock();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prev = std::env::var_os("GROKTASK_AGENT_HOME");
+        std::env::set_var("GROKTASK_AGENT_HOME", tmp.path());
+
+        assert_eq!(
+            cmd_agents_workflow(&["status".into(), "--cwd".into(), "/tmp/x".into()], false),
+            0
+        );
+        assert_eq!(
+            cmd_agents_workflow(&["status".into(), "--cwd=/tmp/x".into()], false),
+            0
+        );
+        assert_eq!(
+            cmd_agents_workflow(
+                &[
+                    "status".into(),
+                    "codex".into(),
+                    "--cwd".into(),
+                    "/tmp/x".into()
+                ],
+                false
+            ),
+            0
+        );
+        assert_eq!(
+            cmd_agents_workflow(
+                &["status".into(), "claude".into(), "--cwd=/tmp/x".into()],
+                false
+            ),
+            0
+        );
+        assert_eq!(
+            cmd_agents_workflow(&["status".into(), "not-an-agent".into()], false),
+            1
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("GROKTASK_AGENT_HOME", v),
+            None => std::env::remove_var("GROKTASK_AGENT_HOME"),
+        }
     }
 }

@@ -52,12 +52,17 @@ describe("Settings UI (Phase 7)", () => {
     expect(codex.find('[data-testid="agent-config-path"]').text()).toContain(
       "config.toml",
     );
-    expect(codex.find('[data-testid="workflow-path"]').text()).toContain(
-      "AGENTS.md",
-    );
+    const workflowPath = codex.find('[data-testid="workflow-path"]').text();
+    expect(workflowPath).toContain("AGENTS.md");
+    expect(workflowPath).toMatch(/\.codex/);
+    expect(workflowPath).not.toContain("/mock/workspace");
+    expect(w.text()).toMatch(/指令文件（全局）/);
     expect(codex.find('[data-testid="agent-install"]').exists()).toBe(true);
     expect(codex.find('[data-testid="workflow-enable"]').exists()).toBe(true);
     expect(codex.find('[data-testid="agent-reminder"]').exists()).toBe(true);
+    expect(codex.find('[data-testid="workflow-reminder"]').text()).not.toMatch(
+      /全局指令注入尚未支持/,
+    );
 
     w.unmount();
   });
@@ -214,7 +219,7 @@ describe("Settings UI (Phase 7)", () => {
       canWrite: false,
       canRemove: false,
       workflowStatus: "invalid_file",
-      workflowPath: "/mock/workspace/CLAUDE.md",
+      workflowPath: "/mock/home/.claude/CLAUDE.md",
       workflowDetail: "malformed GrokTask managed block markers",
       canWriteWorkflow: false,
     });
@@ -264,7 +269,7 @@ describe("Settings UI (Phase 7)", () => {
     window.history.replaceState({}, "", original || "?");
   });
 
-  it("disables workflow enable/disable when workspace cwd is missing", async () => {
+  it("keeps workflow enable/disable available when workspace cwd is missing", async () => {
     settings.resetSettingsMocksForTests();
     settings.setMockWorkspaceCwd("");
 
@@ -278,25 +283,31 @@ describe("Settings UI (Phase 7)", () => {
     const cwdLine = w.find('[data-testid="workspace-cwd"]');
     expect(cwdLine.exists()).toBe(true);
     expect(cwdLine.text()).toMatch(/无法解析|GrokTask setup/);
+    // Workspace may be missing for task context, but is not the workflow write target.
+    expect(cwdLine.text()).toMatch(/任务上下文|可选/);
     expect(w.find('[data-testid="workspace-cwd-missing"]').exists()).toBe(true);
 
     const card = w.find('[data-testid="agent-card-codex"]');
+    const workflowPath = card.find('[data-testid="workflow-path"]').text();
+    expect(workflowPath).toMatch(/\.codex\/AGENTS\.md/);
+    expect(workflowPath).not.toContain("/mock/workspace");
+    // Workflow buttons stay enabled without workspace (only canWriteWorkflow/busy gate).
     expect(
       (
         card.find('[data-testid="workflow-enable"]')
           .element as HTMLButtonElement
       ).disabled,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       (
         card.find('[data-testid="workflow-disable"]')
           .element as HTMLButtonElement
       ).disabled,
-    ).toBe(true);
-    expect(
-      card.find('[data-testid="workflow-disabled-reason"]').text(),
-    ).toMatch(/GrokTask setup|无法解析/);
-    // Must not present `/` or a silent fake writable path.
+    ).toBe(false);
+    expect(card.find('[data-testid="workflow-disabled-reason"]').exists()).toBe(
+      false,
+    );
+    // Must not present `/` or a silent fake writable workspace path.
     expect(cwdLine.text()).not.toMatch(/(^|\/)\s*\/\s*$/);
     expect(cwdLine.text()).not.toContain("//");
 

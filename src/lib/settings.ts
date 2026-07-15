@@ -35,7 +35,7 @@ export interface AgentIntegrationStatus {
   detail?: string;
   canWrite: boolean;
   canRemove: boolean;
-  /** Project workflow instruction status */
+  /** Global user workflow instruction status */
   workflowStatus: WorkflowStatus;
   workflowPath: string;
   workflowDetail?: string;
@@ -89,13 +89,20 @@ const mockSettings: SettingsSnapshot = {
 };
 
 let mockWorkspaceCwd = "/mock/workspace";
+/** Mock user home for global instruction paths (not project workspace). */
+const mockHome = "/mock/home";
+
+function globalWorkflowPath(agent: AgentId): string {
+  return agent === "codex"
+    ? `${mockHome}/.codex/AGENTS.md`
+    : `${mockHome}/.claude/CLAUDE.md`;
+}
 
 function defaultAgent(
   agent: AgentId,
   status: IntegrationStatus = "not_installed",
   workflowStatus: WorkflowStatus = "not_enabled",
 ): AgentIntegrationStatus {
-  const filename = agent === "codex" ? "AGENTS.md" : "CLAUDE.md";
   const configPath =
     agent === "codex" ? "~/.codex/config.toml" : "~/.claude.json";
   return {
@@ -106,7 +113,7 @@ function defaultAgent(
     canWrite: true,
     canRemove: true,
     workflowStatus,
-    workflowPath: `${mockWorkspaceCwd}/${filename}`,
+    workflowPath: globalWorkflowPath(agent),
     canWriteWorkflow: true,
   };
 }
@@ -385,7 +392,7 @@ export function setMockAgentStatus(
     canWrite: true,
     canRemove: true,
     workflowStatus: "not_enabled",
-    workflowPath: `${mockWorkspaceCwd}/${status.agent === "codex" ? "AGENTS.md" : "CLAUDE.md"}`,
+    workflowPath: globalWorkflowPath(status.agent),
     canWriteWorkflow: true,
     ...status,
   };
@@ -397,24 +404,10 @@ export function setMockAgentStatus(
   }
 }
 
-/** Test helper: set mock workspace cwd. Empty string = no trusted project. */
+/**
+ * Test helper: set mock workspace cwd (task/MCP context display only).
+ * Empty string = no trusted project. Does not change global workflow paths.
+ */
 export function setMockWorkspaceCwd(cwd: string): void {
   mockWorkspaceCwd = cwd;
-  const hasWs = cwd.trim().length > 0;
-  mockAgents = mockAgents.map((a) => {
-    const filename = a.agent === "codex" ? "AGENTS.md" : "CLAUDE.md";
-    if (!hasWs) {
-      return {
-        ...a,
-        workflowPath: `<workspace>/${filename}`,
-        workflowStatus: "unavailable" as const,
-        canWriteWorkflow: false,
-        workflowDetail: "无法解析工作区路径；请从项目目录运行 GrokTask setup",
-      };
-    }
-    return {
-      ...a,
-      workflowPath: `${cwd}/${filename}`,
-    };
-  });
 }

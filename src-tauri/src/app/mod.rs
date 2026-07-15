@@ -10,14 +10,11 @@ pub mod commands {
     use crate::config::{ConfigDocument, LanguagePref, ThemePref, TrayMode};
     use crate::doctor::{self, DoctorReport, GrokCliStatus};
     use crate::dto::{TaskDetail, TaskListItem};
-    use crate::integrations::{
-        self, AgentId, AgentIntegrationStatus, AgentStatusReport, WorkflowStatus,
-    };
+    use crate::integrations::{self, AgentId, AgentIntegrationStatus, AgentStatusReport};
     use crate::ipc::client::{self, unwrap_result};
     use crate::ipc::protocol::ClientRole;
     use serde::{Deserialize, Serialize};
     use serde_json::{json, Value};
-    use std::path::PathBuf;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -107,49 +104,10 @@ pub mod commands {
         settings_get()
     }
 
-    /// Resolve workspace for UI from an **explicit** project path only.
-    ///
-    /// Does not fall back to the GUI process current_dir (unsafe for Finder /
-    /// menu-bar launches). Callers must pass the trusted cwd from `workspace_cwd`
-    /// / `GrokTask setup`.
-    fn resolve_ui_workspace(cwd: Option<String>) -> Option<PathBuf> {
-        let explicit = cwd.filter(|s| !s.trim().is_empty())?;
-        match integrations::resolve_workspace(Some(std::path::Path::new(&explicit))) {
-            Ok(p) => Some(p),
-            Err(_) => None,
-        }
-    }
-
-    fn attach_workflow(
-        mut status: AgentIntegrationStatus,
-        workspace: Option<&std::path::Path>,
-    ) -> AgentIntegrationStatus {
-        match workspace {
-            Some(ws) => {
-                let w = integrations::workflow_status(ws, status.agent);
-                status.workflow_status = w.status;
-                status.workflow_path = w.path;
-                status.workflow_detail = w.detail;
-                status.can_write_workflow = w.can_write;
-            }
-            None => {
-                status.workflow_status = WorkflowStatus::Unavailable;
-                if status.workflow_path.is_empty() {
-                    status.workflow_path = format!(
-                        "<workspace>/{}",
-                        integrations::workflow::instruction_filename(status.agent)
-                    );
-                }
-                status.can_write_workflow = false;
-            }
-        }
-        status
-    }
-
     #[tauri::command]
     pub fn agents_status(
         agent: Option<String>,
-        cwd: Option<String>,
+        #[allow(unused_variables)] cwd: Option<String>,
     ) -> Result<AgentStatusReport, String> {
         let filter = match agent.as_deref() {
             None | Some("") => None,
@@ -158,24 +116,22 @@ pub mod commands {
         let command = integrations::current_exe_path()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "GrokTask".into());
+        // Workflow + MCP both use user home roots; cwd is accepted for IPC
+        // compatibility but not required for status resolution.
         let roots = integrations::IntegrationRoots::user_default();
-        let workspace = resolve_ui_workspace(cwd);
-        Ok(integrations::status_report(
-            &roots,
-            filter,
-            &command,
-            workspace.as_deref(),
-        ))
+        Ok(integrations::status_report(&roots, filter, &command))
     }
 
     #[tauri::command]
-    pub fn agents_install(agent: String, cwd: Option<String>) -> Result<ActionResult, String> {
+    pub fn agents_install(
+        agent: String,
+        #[allow(unused_variables)] cwd: Option<String>,
+    ) -> Result<ActionResult, String> {
         let id = AgentId::parse(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
         let command = integrations::current_exe_path()
             .map(|p| p.display().to_string())
             .map_err(|e| e.to_string())?;
         let roots = integrations::IntegrationRoots::user_default();
-        let workspace = resolve_ui_workspace(cwd);
         match integrations::install(&roots, id, &command) {
             Ok(status) => Ok(ActionResult {
                 ok: true,
@@ -183,7 +139,7 @@ pub mod commands {
                     "已安装/更新 {} 的 MCP 条目。请在 Agent 中重启或重新加载 MCP。",
                     id.as_str()
                 )),
-                status: Some(attach_workflow(status, workspace.as_deref())),
+                status: Some(status),
             }),
             Err(e) => Ok(ActionResult {
                 ok: false,
@@ -194,13 +150,15 @@ pub mod commands {
     }
 
     #[tauri::command]
-    pub fn agents_remove(agent: String, cwd: Option<String>) -> Result<ActionResult, String> {
+    pub fn agents_remove(
+        agent: String,
+        #[allow(unused_variables)] cwd: Option<String>,
+    ) -> Result<ActionResult, String> {
         let id = AgentId::parse(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
         let command = integrations::current_exe_path()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "GrokTask".into());
         let roots = integrations::IntegrationRoots::user_default();
-        let workspace = resolve_ui_workspace(cwd);
         match integrations::remove(&roots, id, &command) {
             Ok(status) => Ok(ActionResult {
                 ok: true,
@@ -208,7 +166,7 @@ pub mod commands {
                     "已移除 {} 的 MCP 条目（不存在时为 no-op）。请在 Agent 中重新加载 MCP。",
                     id.as_str()
                 )),
-                status: Some(attach_workflow(status, workspace.as_deref())),
+                status: Some(status),
             }),
             Err(e) => Ok(ActionResult {
                 ok: false,
@@ -231,27 +189,21 @@ pub mod commands {
     #[tauri::command]
     pub fn agents_workflow_enable(
         agent: String,
-        cwd: Option<String>,
+        #[allow(unused_variables)] cwd: Option<String>,
     ) -> Result<WorkflowActionResult, String> {
         let id = AgentId::parse(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
-        let workspace = resolve_ui_workspace(cwd)
-            .ok_or_else(|| "无法解析工作区路径；请指定项目目录（cwd）".to_string())?;
+        // Global user instruction files — do not require workspace_cwd.
+        let roots = integrations::IntegrationRoots::user_default();
         let command = integrations::current_exe_path()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "GrokTask".into());
-        let roots = integrations::IntegrationRoots::user_default();
-        match integrations::workflow_enable(&workspace, id) {
+        match integrations::workflow_enable(&roots, id) {
             Ok(_) => {
-                let report = integrations::status_report(
-                    &roots,
-                    Some(id),
-                    &command,
-                    Some(workspace.as_path()),
-                );
+                let report = integrations::status_report(&roots, Some(id), &command);
                 Ok(WorkflowActionResult {
                     ok: true,
                     message: Some(format!(
-                        "已写入 {} 协作指令到 {}。Agent 下次会话将读取该文件。",
+                        "已写入 {} 全局协作指令到 {}。Agent 下次会话将读取该文件。",
                         id.as_str(),
                         report
                             .agents
@@ -273,27 +225,21 @@ pub mod commands {
     #[tauri::command]
     pub fn agents_workflow_disable(
         agent: String,
-        cwd: Option<String>,
+        #[allow(unused_variables)] cwd: Option<String>,
     ) -> Result<WorkflowActionResult, String> {
         let id = AgentId::parse(&agent).ok_or_else(|| format!("unknown agent `{agent}`"))?;
-        let workspace = resolve_ui_workspace(cwd)
-            .ok_or_else(|| "无法解析工作区路径；请指定项目目录（cwd）".to_string())?;
+        // Global user instruction files — do not require workspace_cwd.
+        let roots = integrations::IntegrationRoots::user_default();
         let command = integrations::current_exe_path()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "GrokTask".into());
-        let roots = integrations::IntegrationRoots::user_default();
-        match integrations::workflow_disable(&workspace, id) {
+        match integrations::workflow_disable(&roots, id) {
             Ok(_) => {
-                let report = integrations::status_report(
-                    &roots,
-                    Some(id),
-                    &command,
-                    Some(workspace.as_path()),
-                );
+                let report = integrations::status_report(&roots, Some(id), &command);
                 Ok(WorkflowActionResult {
                     ok: true,
                     message: Some(format!(
-                        "已从指令文件移除 {} 的 GrokTask 托管区块。",
+                        "已从全局指令文件移除 {} 的 GrokTask 托管区块。",
                         id.as_str()
                     )),
                     status: report.agents.into_iter().next(),
@@ -307,11 +253,12 @@ pub mod commands {
         }
     }
 
-    /// Trusted project workspace path for Settings workflow writes.
+    /// Trusted project workspace path for Settings task/MCP context display.
     ///
     /// Returns the path last provided by `GrokTask setup` (via `gui.open_settings`
     /// with `cwd`). Does **not** fall back to the GUI process working directory,
     /// which is unsafe/wrong when the host was started from Finder or the menu bar.
+    /// Workflow instruction writes use global user files and do not need this path.
     #[tauri::command]
     pub fn workspace_cwd(app: tauri::AppHandle) -> Result<String, String> {
         let selected = crate::app::gui_host::selected_workspace_cwd(&app);

@@ -1,16 +1,20 @@
-//! Project-level workflow instruction managed blocks for Codex / Claude Code.
+//! Global user-level workflow instruction managed blocks for Codex / Claude Code.
 //!
-//! Injects a GrokTask-managed instruction block into workspace instruction
-//! files so host agents proactively call the `groktask` MCP server.
+//! Injects a GrokTask-managed instruction block into the host agent's global
+//! instruction files so agents proactively call the `groktask` MCP server.
 //!
-//! Targets (project-level only for this phase):
-//! - Codex: `<workspace>/AGENTS.md`
-//! - Claude Code: `<workspace>/CLAUDE.md`
+//! Targets (user-global, not project-scoped):
+//! - Codex: `<home>/.codex/AGENTS.md` (never `AGENTS.override.md`)
+//! - Claude Code: `<home>/.claude/CLAUDE.md`
+//!
+//! Paths resolve via [`IntegrationRoots`] so tests can route to temp homes and
+//! never write the real user home.
 //!
 //! Never edits AskHuman managed blocks. Operations are idempotent and refuse
 //! to write when markers are malformed.
 
 use super::types::{AgentId, IntegrationError, WorkflowStatus};
+use super::IntegrationRoots;
 use crate::config::atomic_write;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,7 +53,7 @@ pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
 - 如果连续两轮修复仍无法收敛，停止循环并向用户说明阻塞点。
 "#;
 
-/// Instruction file relative name for each agent (project-level).
+/// Instruction file basename for each agent.
 pub fn instruction_filename(agent: AgentId) -> &'static str {
     match agent {
         AgentId::Codex => "AGENTS.md",
@@ -57,9 +61,15 @@ pub fn instruction_filename(agent: AgentId) -> &'static str {
     }
 }
 
-/// Absolute path to the project instruction file for `agent` under `workspace`.
-pub fn instruction_path(workspace: &Path, agent: AgentId) -> PathBuf {
-    workspace.join(instruction_filename(agent))
+/// Absolute path to the global user instruction file for `agent` under `roots.home`.
+///
+/// - Codex: `<home>/.codex/AGENTS.md`
+/// - Claude: `<home>/.claude/CLAUDE.md`
+pub fn instruction_path(roots: &IntegrationRoots, agent: AgentId) -> PathBuf {
+    match agent {
+        AgentId::Codex => roots.home.join(".codex").join("AGENTS.md"),
+        AgentId::Claude => roots.home.join(".claude").join("CLAUDE.md"),
+    }
 }
 
 /// Whether text contains a well-formed GrokTask managed block.
@@ -202,7 +212,7 @@ fn tidy(s: &str) -> String {
     }
 }
 
-/// Workflow status for one agent under a workspace directory.
+/// Workflow status for one agent under a user home root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowInspection {
     pub status: WorkflowStatus,
@@ -212,22 +222,11 @@ pub struct WorkflowInspection {
 }
 
 /// Inspect workflow instruction status without writing.
-pub fn inspect(workspace: &Path, agent: AgentId) -> WorkflowInspection {
-    let path = instruction_path(workspace, agent);
+pub fn inspect(roots: &IntegrationRoots, agent: AgentId) -> WorkflowInspection {
+    let path = instruction_path(roots, agent);
     let display = path.display().to_string();
 
-    if !workspace.exists() {
-        return WorkflowInspection {
-            status: WorkflowStatus::Unavailable,
-            path: display,
-            detail: Some(format!(
-                "workspace path does not exist: {}",
-                workspace.display()
-            )),
-            can_write: false,
-        };
-    }
-
+    // Parent dir may not exist yet — still not_enabled and writable (enable creates dirs).
     if !path.exists() {
         return WorkflowInspection {
             status: WorkflowStatus::NotEnabled,
@@ -284,14 +283,11 @@ pub fn inspect(workspace: &Path, agent: AgentId) -> WorkflowInspection {
 }
 
 /// Enable (upsert) the default managed instruction block for `agent`.
-pub fn enable(workspace: &Path, agent: AgentId) -> Result<WorkflowInspection, IntegrationError> {
-    let path = instruction_path(workspace, agent);
-    if !workspace.exists() {
-        return Err(IntegrationError::Unavailable(format!(
-            "workspace path does not exist: {}",
-            workspace.display()
-        )));
-    }
+pub fn enable(
+    roots: &IntegrationRoots,
+    agent: AgentId,
+) -> Result<WorkflowInspection, IntegrationError> {
+    let path = instruction_path(roots, agent);
 
     let existing = if path.exists() {
         fs::read_to_string(&path)?
@@ -301,27 +297,30 @@ pub fn enable(workspace: &Path, agent: AgentId) -> Result<WorkflowInspection, In
 
     // Refuse if malformed before any write.
     let updated = upsert_block(&existing, DEFAULT_WORKFLOW_BODY)?;
-    if updated == existing {
-        return Ok(inspect(workspace, agent));
+    if updated == existing && path.exists() {
+        return Ok(inspect(roots, agent));
     }
 
     write_instruction(&path, &updated)?;
-    Ok(inspect(workspace, agent))
+    Ok(inspect(roots, agent))
 }
 
 /// Disable: remove only the GrokTask managed block.
-pub fn disable(workspace: &Path, agent: AgentId) -> Result<WorkflowInspection, IntegrationError> {
-    let path = instruction_path(workspace, agent);
+pub fn disable(
+    roots: &IntegrationRoots,
+    agent: AgentId,
+) -> Result<WorkflowInspection, IntegrationError> {
+    let path = instruction_path(roots, agent);
     if !path.exists() {
-        return Ok(inspect(workspace, agent));
+        return Ok(inspect(roots, agent));
     }
     let existing = fs::read_to_string(&path)?;
     let updated = remove_block(&existing)?;
     if updated == existing {
-        return Ok(inspect(workspace, agent));
+        return Ok(inspect(roots, agent));
     }
     write_instruction(&path, &updated)?;
-    Ok(inspect(workspace, agent))
+    Ok(inspect(roots, agent))
 }
 
 fn write_instruction(path: &Path, text: &str) -> Result<(), IntegrationError> {
@@ -351,52 +350,73 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn temp_roots() -> (TempDir, IntegrationRoots) {
+        let tmp = TempDir::new().unwrap();
+        let roots = IntegrationRoots::from_home(tmp.path());
+        (tmp, roots)
+    }
+
+    #[test]
+    fn instruction_paths_are_global_under_home() {
+        let (_tmp, roots) = temp_roots();
+        assert_eq!(
+            instruction_path(&roots, AgentId::Codex),
+            roots.home.join(".codex").join("AGENTS.md")
+        );
+        assert_eq!(
+            instruction_path(&roots, AgentId::Claude),
+            roots.home.join(".claude").join("CLAUDE.md")
+        );
+    }
+
     #[test]
     fn create_missing_agents_md() {
-        let tmp = TempDir::new().unwrap();
-        let st = enable(tmp.path(), AgentId::Codex).unwrap();
+        let (_tmp, roots) = temp_roots();
+        let st = enable(&roots, AgentId::Codex).unwrap();
         assert_eq!(st.status, WorkflowStatus::Enabled);
-        let path = tmp.path().join("AGENTS.md");
+        let path = roots.home.join(".codex").join("AGENTS.md");
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains(BLOCK_BEGIN));
         assert!(text.contains(BLOCK_END));
         assert!(text.contains("GrokTask 协作协议"));
         // Idempotent
         let before = fs::read_to_string(&path).unwrap();
-        enable(tmp.path(), AgentId::Codex).unwrap();
+        enable(&roots, AgentId::Codex).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
     }
 
     #[test]
     fn create_missing_claude_md() {
-        let tmp = TempDir::new().unwrap();
-        let st = enable(tmp.path(), AgentId::Claude).unwrap();
+        let (_tmp, roots) = temp_roots();
+        let st = enable(&roots, AgentId::Claude).unwrap();
         assert_eq!(st.status, WorkflowStatus::Enabled);
-        assert!(tmp.path().join("CLAUDE.md").exists());
+        assert!(roots.home.join(".claude").join("CLAUDE.md").exists());
     }
 
     #[test]
     fn append_to_existing_file() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("AGENTS.md");
-        fs::write(&path, "# My project rules\n\nAlways run tests.\n").unwrap();
-        enable(tmp.path(), AgentId::Codex).unwrap();
+        let (_tmp, roots) = temp_roots();
+        let path = roots.home.join(".codex").join("AGENTS.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "# My user rules\n\nAlways run tests.\n").unwrap();
+        enable(&roots, AgentId::Codex).unwrap();
         let text = fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with("# My project rules"));
+        assert!(text.starts_with("# My user rules"));
         assert!(text.contains("Always run tests."));
         assert!(text.contains(BLOCK_BEGIN));
     }
 
     #[test]
     fn update_old_block_body() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("AGENTS.md");
+        let (_tmp, roots) = temp_roots();
+        let path = roots.home.join(".codex").join("AGENTS.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         let old = format!("{BLOCK_BEGIN}\nold body\n{BLOCK_END}\n");
         fs::write(&path, &old).unwrap();
-        let st = inspect(tmp.path(), AgentId::Codex);
+        let st = inspect(&roots, AgentId::Codex);
         assert_eq!(st.status, WorkflowStatus::Outdated);
-        enable(tmp.path(), AgentId::Codex).unwrap();
-        let st = inspect(tmp.path(), AgentId::Codex);
+        enable(&roots, AgentId::Codex).unwrap();
+        let st = inspect(&roots, AgentId::Codex);
         assert_eq!(st.status, WorkflowStatus::Enabled);
         let body = block_body(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(body.trim(), DEFAULT_WORKFLOW_BODY.trim());
@@ -404,14 +424,15 @@ mod tests {
 
     #[test]
     fn disable_removes_only_groktask_block() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("AGENTS.md");
+        let (_tmp, roots) = temp_roots();
+        let path = roots.home.join(".codex").join("AGENTS.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         let askhuman = "<!-- AskHuman:begin DO NOT EDIT (managed by AskHuman) -->\nask content\n<!-- AskHuman:end -->";
         let content = format!(
             "# header\n\n{askhuman}\n\n{BLOCK_BEGIN}\n{DEFAULT_WORKFLOW_BODY}{BLOCK_END}\n\nfooter\n"
         );
         fs::write(&path, &content).unwrap();
-        disable(tmp.path(), AgentId::Codex).unwrap();
+        disable(&roots, AgentId::Codex).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(!text.contains(BLOCK_BEGIN));
         assert!(!text.contains(BLOCK_END));
@@ -423,15 +444,16 @@ mod tests {
 
     #[test]
     fn malformed_marker_refuses_write() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("AGENTS.md");
+        let (_tmp, roots) = temp_roots();
+        let path = roots.home.join(".codex").join("AGENTS.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         // Begin without end
         fs::write(&path, format!("{BLOCK_BEGIN}\nno end\n")).unwrap();
         let before = fs::read(&path).unwrap();
-        let st = inspect(tmp.path(), AgentId::Codex);
+        let st = inspect(&roots, AgentId::Codex);
         assert_eq!(st.status, WorkflowStatus::InvalidFile);
-        assert!(enable(tmp.path(), AgentId::Codex).is_err());
-        assert!(disable(tmp.path(), AgentId::Codex).is_err());
+        assert!(enable(&roots, AgentId::Codex).is_err());
+        assert!(disable(&roots, AgentId::Codex).is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
 
         // Multiple begins
@@ -441,19 +463,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            inspect(tmp.path(), AgentId::Codex).status,
+            inspect(&roots, AgentId::Codex).status,
             WorkflowStatus::InvalidFile
         );
-        assert!(enable(tmp.path(), AgentId::Codex).is_err());
+        assert!(enable(&roots, AgentId::Codex).is_err());
     }
 
     #[test]
     fn askhuman_block_preserved_on_enable() {
-        let tmp = TempDir::new().unwrap();
-        let path = tmp.path().join("AGENTS.md");
+        let (_tmp, roots) = temp_roots();
+        let path = roots.home.join(".codex").join("AGENTS.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         let askhuman = "<!-- AskHuman:begin DO NOT EDIT (managed by AskHuman) -->\nkeep me\n<!-- AskHuman:end -->\n";
         fs::write(&path, askhuman).unwrap();
-        enable(tmp.path(), AgentId::Codex).unwrap();
+        enable(&roots, AgentId::Codex).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(contains_askhuman_block(&text));
         assert!(text.contains("keep me"));
@@ -461,11 +484,24 @@ mod tests {
     }
 
     #[test]
-    fn not_enabled_when_empty_workspace() {
-        let tmp = TempDir::new().unwrap();
-        let st = inspect(tmp.path(), AgentId::Codex);
+    fn not_enabled_when_empty_home() {
+        let (_tmp, roots) = temp_roots();
+        let st = inspect(&roots, AgentId::Codex);
         assert_eq!(st.status, WorkflowStatus::NotEnabled);
-        assert!(st.path.ends_with("AGENTS.md"));
+        assert!(st.can_write);
+        assert!(st.path.ends_with(".codex/AGENTS.md") || st.path.ends_with(".codex\\AGENTS.md"));
+    }
+
+    #[test]
+    fn never_writes_agents_override() {
+        let (_tmp, roots) = temp_roots();
+        enable(&roots, AgentId::Codex).unwrap();
+        assert!(!roots
+            .home
+            .join(".codex")
+            .join("AGENTS.override.md")
+            .exists());
+        assert!(roots.home.join(".codex").join("AGENTS.md").exists());
     }
 
     #[test]
