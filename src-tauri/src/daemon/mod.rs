@@ -67,7 +67,10 @@ async fn run_async() -> Result<()> {
 
     let barrier = Arc::new(ReplacementBarrier::new());
     let guards = Arc::new(DeletionGuards::new());
-    let tasks = Arc::new(TaskManager::new(db_path.clone()));
+    let tasks = Arc::new(TaskManager::new(
+        db_path.clone(),
+        config.snapshot().general.grok_executable.clone(),
+    ));
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let state = Arc::new(DaemonState {
         meta: Mutex::new(meta.clone()),
@@ -911,7 +914,7 @@ mod tests {
                 barrier: Arc::new(ReplacementBarrier::new()),
                 guards: Arc::new(DeletionGuards::new()),
                 db_path: db_path.clone(),
-                tasks: Arc::new(TaskManager::new(db_path)),
+                tasks: Arc::new(TaskManager::new(db_path, None)),
             });
 
             let server = tokio::spawn({
@@ -991,7 +994,7 @@ mod tests {
                 barrier: Arc::new(ReplacementBarrier::new()),
                 guards: Arc::new(DeletionGuards::new()),
                 db_path: db_path.clone(),
-                tasks: Arc::new(TaskManager::new(db_path)),
+                tasks: Arc::new(TaskManager::new(db_path, None)),
             });
             let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
 

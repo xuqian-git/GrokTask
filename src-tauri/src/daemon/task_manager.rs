@@ -41,6 +41,7 @@ struct TurnRuntime {
 
 pub struct TaskManager {
     db_path: PathBuf,
+    grok_executable: Option<String>,
     /// turn_id → runtime
     turns: Mutex<HashMap<String, Arc<TurnRuntime>>>,
     /// task_id → latest action cache
@@ -52,12 +53,13 @@ pub struct TaskManager {
 }
 
 impl TaskManager {
-    pub fn new(db_path: PathBuf) -> Self {
+    pub fn new(db_path: PathBuf, grok_executable: Option<String>) -> Self {
         let fixture_mode = std::env::var("GROKTASK_FIXTURE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
         Self {
             db_path,
+            grok_executable,
             turns: Mutex::new(HashMap::new()),
             latest_action: Mutex::new(HashMap::new()),
             current_step: Mutex::new(HashMap::new()),
@@ -825,7 +827,7 @@ impl TaskManager {
         rt: &TurnRuntime,
         started: i64,
     ) -> Result<RunResult> {
-        let grok = resolve_grok_executable()?;
+        let grok = resolve_grok_executable(self.grok_executable.as_deref())?;
         let mode = match input.mode {
             TaskMode::Read => AcpMode::Read,
             TaskMode::Write => AcpMode::Write,
@@ -1239,7 +1241,13 @@ fn escape_json(s: &str) -> String {
         .replace('\n', "\\n")
 }
 
-fn resolve_grok_executable() -> Result<PathBuf> {
+fn resolve_grok_executable(configured: Option<&str>) -> Result<PathBuf> {
+    if let Some(p) = configured {
+        let path = PathBuf::from(p);
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
     if let Ok(p) = std::env::var("GROK_EXECUTABLE") {
         let path = PathBuf::from(p);
         if path.is_file() {
@@ -1250,9 +1258,25 @@ fn resolve_grok_executable() -> Result<PathBuf> {
     if let Ok(path) = which("grok") {
         return Ok(path);
     }
+    for path in common_grok_paths() {
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
     Err(anyhow!(
-        "grok CLI not found on PATH; install Grok CLI or set GROK_EXECUTABLE"
+        "grok CLI not found; install Grok CLI, set grokExecutable, or set GROK_EXECUTABLE"
     ))
+}
+
+fn common_grok_paths() -> Vec<PathBuf> {
+    let home = crate::paths::home();
+    vec![
+        home.join(".local/bin/grok"),
+        home.join(".grok/bin/grok"),
+        home.join("bin/grok"),
+        PathBuf::from("/opt/homebrew/bin/grok"),
+        PathBuf::from("/usr/local/bin/grok"),
+    ]
 }
 
 fn which(name: &str) -> Result<PathBuf> {
@@ -1380,7 +1404,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("h.sqlite3");
         let _ = crate::storage::open_path(&db).unwrap();
-        let mgr = Arc::new(TaskManager::new(db));
+        let mgr = Arc::new(TaskManager::new(db, None));
         let input = TaskInput {
             task: "hello fixture".into(),
             cwd: tmp.path().to_string_lossy().into_owned(),
@@ -1429,5 +1453,17 @@ mod tests {
         // Note: cwd canonicalize may differ — use same as stored via re-validate
         let _ = input2;
         std::env::remove_var("GROKTASK_FIXTURE");
+    }
+
+    #[test]
+    fn grok_executable_prefers_configured_absolute_path() {
+        let tmp = TempDir::new().unwrap();
+        let grok = tmp.path().join("grok");
+        std::fs::write(&grok, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_grok_executable(Some(&grok.to_string_lossy())).unwrap(),
+            grok
+        );
     }
 }
