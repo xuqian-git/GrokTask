@@ -72,12 +72,80 @@ describe("Settings UI (Phase 7)", () => {
     expect(w.find('[data-testid="section-integrations"]').exists()).toBe(true);
 
     await w.find('[data-testid="tab-diagnostics"]').trigger("click");
+    await new Promise((r) => setTimeout(r, 20));
     await w.vm.$nextTick();
 
     expect(w.find('[data-testid="section-diagnostics"]').exists()).toBe(true);
     expect(w.find('[data-testid="section-integrations"]').exists()).toBe(false);
     expect(window.location.search).toContain("section=diagnostics");
     // Single click was enough — diagnostics is visible immediately.
+    expect(w.find('[data-testid="grok-state"]').exists()).toBe(true);
+
+    w.unmount();
+  });
+
+  it("initial mount does not fetch doctor report", async () => {
+    settings.resetSettingsMocksForTests();
+    const spy = vi.spyOn(settings, "fetchDoctorReport");
+
+    const w = mount(SettingsView, { attachTo: document.body });
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(w.find('[data-testid="section-general"]').exists()).toBe(true);
+    expect(w.find('[data-testid="settings-loading"]').exists()).toBe(false);
+
+    w.unmount();
+  });
+
+  it("selecting Diagnostics lazy-loads doctor report and avoids duplicate fetches", async () => {
+    settings.resetSettingsMocksForTests();
+    const spy = vi.spyOn(settings, "fetchDoctorReport");
+
+    const w = mount(SettingsView, { attachTo: document.body });
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+    expect(spy).not.toHaveBeenCalled();
+
+    await w.find('[data-testid="tab-diagnostics"]').trigger("click");
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(w.find('[data-testid="section-diagnostics"]').exists()).toBe(true);
+    expect(w.find('[data-testid="grok-state"]').exists()).toBe(true);
+    expect(w.find('[data-testid="tray-capability"]').exists()).toBe(true);
+    expect(w.find('[data-testid="daemon-status"]').exists()).toBe(true);
+
+    // Leave and re-enter Diagnostics — should not re-probe.
+    await w.find('[data-testid="tab-general"]').trigger("click");
+    await w.vm.$nextTick();
+    await w.find('[data-testid="tab-diagnostics"]').trigger("click");
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // Refresh forces a new doctor fetch.
+    await w.find('[data-testid="refresh-doctor"]').trigger("click");
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    w.unmount();
+  });
+
+  it("section=diagnostics deep-link loads doctor after essentials", async () => {
+    settings.resetSettingsMocksForTests();
+    const spy = vi.spyOn(settings, "fetchDoctorReport");
+    window.history.replaceState({}, "", "?view=settings&section=diagnostics");
+
+    const w = mount(SettingsView, { attachTo: document.body });
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    expect(spy).toHaveBeenCalled();
+    expect(w.find('[data-testid="section-diagnostics"]').exists()).toBe(true);
     expect(w.find('[data-testid="grok-state"]').exists()).toBe(true);
 
     w.unmount();
@@ -242,6 +310,7 @@ describe("Settings UI (Phase 7)", () => {
     await w.vm.$nextTick();
 
     await w.find('[data-testid="tab-diagnostics"]').trigger("click");
+    await new Promise((r) => setTimeout(r, 20));
     await w.vm.$nextTick();
 
     expect(w.find('[data-testid="section-diagnostics"]').exists()).toBe(true);

@@ -26,12 +26,18 @@ const settings = ref<SettingsSnapshot | null>(null);
 const agents = ref<AgentIntegrationStatus[]>([]);
 const doctor = ref<DoctorReport | null>(null);
 const workspaceCwd = ref<string>("");
+/** Essentials only (settings / cwd / agents). Never includes doctor probing. */
 const loading = ref(true);
+/** Diagnostics-only doctor_report load; does not block General/Tools. */
+const doctorLoading = ref(false);
 const busyAgent = ref<AgentId | null>(null);
 const busyWorkflow = ref<AgentId | null>(null);
 const actionMessage = ref<string | null>(null);
 const actionOk = ref<boolean | null>(null);
 const traySaving = ref(false);
+
+/** In-flight doctor fetch so repeated Diagnostics tab clicks share one request. */
+let doctorInFlight: Promise<void> | null = null;
 
 const trayOptions: { value: TrayMode; label: string; hint: string }[] = [
   {
@@ -99,16 +105,16 @@ function selectSection(next: Section) {
   window.history.replaceState({}, "", qs ? `?${qs}` : "?");
 }
 
-async function refreshAll() {
+/** Lightweight Settings essentials for General / Tools — never runs doctor probes. */
+async function refreshEssentials() {
   loading.value = true;
   actionMessage.value = null;
   actionOk.value = null;
   try {
-    const [s, cwd, a, d] = await Promise.all([
+    const [s, cwd, a] = await Promise.all([
       fetchSettings(),
       fetchWorkspaceCwd().catch(() => ""),
       fetchAgentsStatus(undefined, undefined),
-      fetchDoctorReport(),
     ]);
     settings.value = s;
     workspaceCwd.value = cwd;
@@ -119,10 +125,37 @@ async function refreshAll() {
     } else {
       agents.value = a.agents;
     }
-    doctor.value = d;
   } finally {
     loading.value = false;
   }
+}
+
+/**
+ * Lazy doctor_report for the Diagnostics tab only.
+ * By default skips when already loaded; `force` re-fetches (Refresh button).
+ * Concurrent callers share the same in-flight promise.
+ */
+async function refreshDoctor(options: { force?: boolean } = {}) {
+  const force = options.force ?? false;
+  if (!force && doctor.value !== null) {
+    return;
+  }
+  if (doctorInFlight) {
+    return doctorInFlight;
+  }
+  doctorLoading.value = true;
+  doctorInFlight = (async () => {
+    try {
+      doctor.value = await fetchDoctorReport();
+    } catch (e) {
+      actionOk.value = false;
+      actionMessage.value = e instanceof Error ? e.message : String(e);
+    } finally {
+      doctorLoading.value = false;
+      doctorInFlight = null;
+    }
+  })();
+  return doctorInFlight;
 }
 
 async function onTrayModeChange(mode: TrayMode) {
@@ -321,7 +354,11 @@ function onSettingsSectionEvent(ev: Event) {
 onMounted(() => {
   applySectionFromQuery();
   window.addEventListener("groktask-settings-section", onSettingsSectionEvent);
-  void refreshAll();
+  // Essentials only — doctor_report is deferred until Diagnostics is selected.
+  void refreshEssentials();
+  if (section.value === "diagnostics") {
+    void refreshDoctor();
+  }
 });
 
 onUnmounted(() => {
@@ -331,9 +368,12 @@ onUnmounted(() => {
   );
 });
 
-watch(section, () => {
+watch(section, (next) => {
   actionMessage.value = null;
   actionOk.value = null;
+  if (next === "diagnostics") {
+    void refreshDoctor();
+  }
 });
 </script>
 
@@ -646,6 +686,20 @@ watch(section, () => {
         data-testid="section-diagnostics"
       >
         <h2>诊断</h2>
+        <p
+          v-if="doctorLoading && !doctor"
+          class="hint"
+          data-testid="doctor-loading"
+        >
+          加载诊断信息…
+        </p>
+        <p
+          v-else-if="doctorLoading && doctor"
+          class="hint"
+          data-testid="doctor-loading"
+        >
+          刷新中…
+        </p>
         <template v-if="doctor">
           <div class="meta-grid">
             <div>
@@ -689,7 +743,8 @@ watch(section, () => {
           <button
             type="button"
             data-testid="refresh-doctor"
-            @click="refreshAll"
+            :disabled="doctorLoading"
+            @click="refreshDoctor({ force: true })"
           >
             刷新
           </button>
