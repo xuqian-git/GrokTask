@@ -179,6 +179,27 @@ impl TurnReducer {
             .join("")
     }
 
+    /// Final text intended for machine callers.
+    ///
+    /// Grok ACP may emit assistant-message chunks for progress narration before
+    /// the final reply. The UI should still show those intermediate cards, but
+    /// MCP/CLI `RunResult.answer` should be the last assistant segment that was
+    /// explicitly marked as final/partial during turn finalization.
+    pub fn final_answer_markdown(&self) -> String {
+        self.items
+            .iter()
+            .rev()
+            .find(|i| {
+                i.kind == ItemKind::AssistantSegment.as_str()
+                    && matches!(
+                        i.answer_mark.as_deref(),
+                        Some("finalAnswer" | "partialAnswer")
+                    )
+            })
+            .map(|i| i.text.clone())
+            .unwrap_or_else(|| self.answer_markdown())
+    }
+
     pub fn apply(&mut self, update: NormalizedUpdate) {
         if let Some(msg) = update.human_message() {
             self.latest_action = Some(msg.clone());
@@ -815,6 +836,21 @@ mod tests {
             assert!(!item.message.contains("tool_call_update"));
             assert!(!item.message.contains("agent_thought_chunk"));
         }
+    }
+
+    #[test]
+    fn final_answer_prefers_marked_last_assistant_segment() {
+        let lines = [
+            msg("先看一下当前目录状态。"),
+            tool("t1", "index.html"),
+            msg("最终回复"),
+        ];
+        let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+        let (mut r, _) = reduce_lines("task", "turn", "sess", &refs);
+
+        assert_eq!(r.answer_markdown(), "先看一下当前目录状态。最终回复");
+        r.finalize_turn(Some("finalAnswer"));
+        assert_eq!(r.final_answer_markdown(), "最终回复");
     }
 
     #[test]

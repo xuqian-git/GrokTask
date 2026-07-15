@@ -107,11 +107,6 @@ pub fn build_tray_menu(input: &TrayMenuInput) -> Vec<TrayMenuEntry> {
             enabled: true,
         },
         TrayMenuEntry::Action {
-            id: menu_id::HISTORY.into(),
-            text: "ACP 记录".into(),
-            enabled: true,
-        },
-        TrayMenuEntry::Action {
             id: menu_id::SETTINGS.into(),
             text: "设置".into(),
             enabled: true,
@@ -259,7 +254,7 @@ mod tests {
         assert!(ids.contains(&menu_id::SUMMARY));
         assert!(ids.contains(&menu_id::OPEN_CURRENT));
         assert!(ids.contains(&menu_id::OPEN_APP));
-        assert!(ids.contains(&menu_id::HISTORY));
+        assert!(!ids.contains(&menu_id::HISTORY));
         assert!(ids.contains(&menu_id::SETTINGS));
         assert!(ids.contains(&menu_id::DAEMON_STATUS));
         assert!(ids.contains(&menu_id::RESTART_DAEMON));

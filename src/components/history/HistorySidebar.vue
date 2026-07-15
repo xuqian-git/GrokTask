@@ -191,11 +191,13 @@ function dayLabel(iso: string): string {
 .history-sidebar {
   width: 280px;
   flex-shrink: 0;
-  border-right: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
   background: var(--card);
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow: hidden;
   transition: width 0.15s ease;
 }
 .history-sidebar.collapsed {
@@ -206,7 +208,7 @@ function dayLabel(iso: string): string {
   flex-direction: column;
   min-height: 0;
   height: 100%;
-  padding: 10px 0;
+  padding: 12px 0;
 }
 .side-head {
   display: flex;
@@ -216,8 +218,9 @@ function dayLabel(iso: string): string {
 }
 .side-head h2 {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .collapse-btn,
 .expand-btn {
@@ -234,10 +237,10 @@ function dayLabel(iso: string): string {
 }
 .search {
   margin: 0 12px 8px;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
+  padding: 7px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
   color: var(--fg);
   font-size: 12px;
 }
@@ -260,19 +263,22 @@ function dayLabel(iso: string): string {
   padding: 0;
 }
 .task-item {
-  padding: 8px 12px;
+  margin: 2px 8px;
+  padding: 9px 10px;
   cursor: pointer;
-  border-left: 3px solid transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 .task-item:hover {
-  background: var(--bg);
+  background: var(--card-strong);
+  border-color: var(--border);
 }
 .task-item.selected {
   background: var(--muted-bg);
-  border-left-color: var(--muted-fg);
+  border-color: color-mix(in srgb, var(--accent) 36%, transparent);
 }
 .row1 {
   display: flex;
@@ -288,11 +294,11 @@ function dayLabel(iso: string): string {
 }
 .glyph[data-status="failed"],
 .glyph[data-status="interrupted"] {
-  color: #b91c1c;
+  color: var(--danger);
 }
 .glyph[data-status="running"],
 .glyph[data-status="starting"] {
-  color: #059669;
+  color: var(--success);
 }
 .title {
   flex: 1;
@@ -312,7 +318,7 @@ function dayLabel(iso: string): string {
 }
 .mode {
   font-weight: 600;
-  color: var(--muted-fg);
+  color: var(--accent);
 }
 .empty {
   padding: 16px;

@@ -10,7 +10,7 @@ import {
 } from "./mockData";
 import type { TaskDetail, TaskListItem } from "./types";
 
-export type SurfaceId = "popover" | "task" | "history" | "settings";
+export type SurfaceId = "popover" | "task" | "settings";
 
 export interface ConnectionHealth {
   status: "offline" | "connecting" | "online" | "degraded";

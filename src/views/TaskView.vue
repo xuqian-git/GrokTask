@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import ComposerPlaceholder from "@/components/composer/ComposerPlaceholder.vue";
 import HistorySidebar from "@/components/history/HistorySidebar.vue";
 import ActivePlanBar from "@/components/plan/ActivePlanBar.vue";
@@ -20,8 +20,10 @@ const selectedTaskId = ref<string>("");
 const detail = ref<TaskDetail | null>(null);
 const expansion = ref<ExpansionMap>({});
 const loading = ref(true);
+const refreshing = ref(false);
 const error = ref<string | null>(null);
 const sidebarCollapsed = ref(false);
+let refreshTimer: number | null = null;
 
 const statusLabel = computed(() => detail.value?.task.status ?? "");
 const modeLabel = computed(() =>
@@ -39,6 +41,40 @@ async function loadDetail(taskId: string) {
     detail.value = null;
   } finally {
     loading.value = false;
+  }
+}
+
+async function refreshDetail(taskId: string) {
+  try {
+    const next = await fetchTaskDetail(taskId);
+    detail.value = next;
+    error.value = null;
+  } catch (e) {
+    // Keep the last good detail visible during transient daemon restarts.
+    if (!detail.value) {
+      error.value = e instanceof Error ? e.message : String(e);
+    }
+  }
+}
+
+async function refreshList(opts: { selectIfEmpty?: boolean } = {}) {
+  refreshing.value = true;
+  try {
+    const next = await fetchTaskList();
+    tasks.value = next;
+    error.value = null;
+    if (opts.selectIfEmpty && !selectedTaskId.value) {
+      const preferred = props.initialTaskId;
+      const inList =
+        preferred && next.some((t) => t.taskId === preferred) ? preferred : "";
+      selectedTaskId.value = inList || next[0]?.taskId || preferred || "";
+    }
+  } catch (e) {
+    if (!tasks.value.length) {
+      error.value = e instanceof Error ? e.message : String(e);
+    }
+  } finally {
+    refreshing.value = false;
   }
 }
 
@@ -72,7 +108,7 @@ onMounted(async () => {
   loading.value = true;
   error.value = null;
   try {
-    tasks.value = await fetchTaskList();
+    await refreshList({ selectIfEmpty: false });
     // Prefer deep-linked task, else first list entry; never force a demo id.
     const preferred = props.initialTaskId;
     const inList =
@@ -95,6 +131,30 @@ onMounted(async () => {
     detail.value = null;
     loading.value = false;
   }
+
+  refreshTimer = window.setInterval(() => {
+    void refreshList();
+    if (selectedTaskId.value) {
+      void refreshDetail(selectedTaskId.value);
+    }
+  }, 1500);
+
+  window.addEventListener("focus", onWindowFocus);
+});
+
+function onWindowFocus() {
+  void refreshList({ selectIfEmpty: true });
+  if (selectedTaskId.value) {
+    void refreshDetail(selectedTaskId.value);
+  }
+}
+
+onUnmounted(() => {
+  if (refreshTimer !== null) {
+    window.clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  window.removeEventListener("focus", onWindowFocus);
 });
 </script>
 
@@ -130,6 +190,12 @@ onMounted(async () => {
         <p v-if="detail.task.latestAction" class="action">
           {{ detail.task.latestAction }}
         </p>
+        <span
+          v-if="refreshing"
+          class="refreshing"
+          data-testid="task-refreshing"
+          aria-label="正在刷新任务"
+        />
       </header>
 
       <p v-if="loading" class="hint">加载任务…</p>
@@ -164,6 +230,8 @@ onMounted(async () => {
   height: 100%;
   min-height: 0;
   min-width: 0;
+  padding: 12px;
+  gap: 12px;
 }
 .task-main {
   flex: 1;
@@ -171,20 +239,28 @@ onMounted(async () => {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow);
 }
 .task-header {
   flex-shrink: 0;
-  padding: 12px 16px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  gap: 8px;
-  background: var(--card);
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--card-strong);
+  backdrop-filter: blur(14px) saturate(1.15);
 }
 .task-header h2 {
   margin: 0 0 4px;
-  font-size: 15px;
+  font-size: 16px;
+  letter-spacing: -0.01em;
 }
 .meta {
   margin: 0;
@@ -196,7 +272,7 @@ onMounted(async () => {
 }
 .mode {
   font-weight: 600;
-  color: var(--muted-fg);
+  color: var(--accent);
 }
 .status {
   text-transform: lowercase;
@@ -212,6 +288,14 @@ onMounted(async () => {
   font-size: 12px;
   color: var(--subtle);
   max-width: 40%;
+}
+.refreshing {
+  width: 7px;
+  height: 7px;
+  margin-top: 7px;
+  border-radius: 999px;
+  background: var(--accent-green);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent-green) 18%, transparent);
 }
 .hint {
   padding: 16px;

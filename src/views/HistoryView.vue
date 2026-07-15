@@ -127,13 +127,13 @@ onMounted(async () => {
   <section class="panel history" data-testid="history-view">
     <header class="hist-head">
       <div class="title-row">
-        <h2>ACP 记录</h2>
+        <h2>任务记录</h2>
         <span class="count" data-testid="history-count">
           {{ loading ? "…" : `${tasks.length} 条任务` }}
         </span>
       </div>
       <p class="subtitle">
-        浏览本地 daemon 中的 Grok 任务与 ACP 语义记录（非原始 JSON）。
+        浏览本地 daemon 中的 Grok 任务时间线（非原始 JSON）。
       </p>
 
       <div v-if="showFilterBar" class="filters" data-testid="history-filters">

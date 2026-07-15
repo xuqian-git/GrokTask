@@ -2,10 +2,9 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import PopoverView from "./views/PopoverView.vue";
 import TaskView from "./views/TaskView.vue";
-import HistoryView from "./views/HistoryView.vue";
 import SettingsView from "./views/SettingsView.vue";
 
-type Surface = "popover" | "task" | "history" | "settings";
+type Surface = "popover" | "task" | "settings";
 
 const surface = ref<Surface>("task");
 /** Optional task id when navigating from history / external open. */
@@ -15,12 +14,10 @@ const title = computed(() => {
   switch (surface.value) {
     case "popover":
       return "GrokTask";
-    case "history":
-      return "ACP 记录";
     case "settings":
       return "设置";
     default:
-      return "任务";
+      return "任务记录";
   }
 });
 
@@ -29,13 +26,11 @@ const showChrome = computed(() => surface.value !== "popover");
 function applyRouteFromLocation() {
   const params = new URLSearchParams(window.location.search);
   const view = params.get("view");
-  if (
-    view === "popover" ||
-    view === "task" ||
-    view === "history" ||
-    view === "settings"
-  ) {
+  if (view === "popover" || view === "task" || view === "settings") {
     surface.value = view;
+  } else if (view === "history") {
+    // ACP records are now folded into the task timeline page.
+    surface.value = "task";
   }
   const task = params.get("task");
   routeTaskId.value = task && task.length > 0 ? task : undefined;
@@ -67,10 +62,11 @@ function onNavigate(ev: Event) {
   if (
     detail.view === "popover" ||
     detail.view === "task" ||
-    detail.view === "history" ||
     detail.view === "settings"
   ) {
     setSurface(detail.view, { taskId: detail.taskId });
+  } else if (detail.view === "history") {
+    setSurface("task", { taskId: detail.taskId });
   }
 }
 
@@ -105,15 +101,7 @@ onUnmounted(() => {
           :class="{ active: surface === 'task' }"
           @click="setSurface('task')"
         >
-          任务
-        </button>
-        <button
-          type="button"
-          data-testid="nav-history"
-          :class="{ active: surface === 'history' }"
-          @click="setSurface('history')"
-        >
-          ACP 记录
+          任务记录
         </button>
         <button
           type="button"
@@ -128,7 +116,6 @@ onUnmounted(() => {
     <main class="app-main">
       <PopoverView v-if="surface === 'popover'" />
       <TaskView v-else-if="surface === 'task'" :initial-task-id="routeTaskId" />
-      <HistoryView v-else-if="surface === 'history'" />
       <SettingsView v-else />
     </main>
   </div>
@@ -140,26 +127,30 @@ onUnmounted(() => {
   flex-direction: column;
   min-height: 100vh;
   height: 100vh;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 20% 0%, rgba(10, 132, 255, 0.1), transparent 28%),
+    var(--bg);
   color: var(--fg);
 }
 .app-header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 16px;
+  padding: 12px 18px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  background: var(--card);
+  background: var(--card-strong);
+  backdrop-filter: blur(18px) saturate(1.2);
 }
 .app-header h1 {
   margin: 0;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .badge {
   font-size: 11px;
-  padding: 2px 8px;
+  padding: 2px 8px 3px;
   border-radius: 999px;
   background: var(--muted-bg);
   color: var(--muted-fg);
@@ -167,21 +158,27 @@ onUnmounted(() => {
 .nav {
   margin-left: auto;
   display: flex;
-  gap: 4px;
+  gap: 6px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
 }
 .nav button {
   border: 1px solid transparent;
   background: transparent;
   color: var(--subtle);
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 6px;
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 7px;
   cursor: pointer;
 }
 .nav button.active {
-  background: var(--muted-bg);
-  color: var(--muted-fg);
+  background: var(--control-bg);
+  color: var(--fg);
+  border-color: var(--border);
   font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 .app-main {
   flex: 1;

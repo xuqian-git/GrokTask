@@ -795,7 +795,7 @@ impl TaskManager {
 
         reducer.finalize_turn(Some("finalAnswer"));
         self.persist_reducer(task_id, &mut reducer);
-        let answer = reducer.answer_markdown();
+        let answer = reducer.final_answer_markdown();
         let finished = now_ms();
         let result = RunResult {
             task_id: task_id.into(),
@@ -1000,7 +1000,7 @@ impl TaskManager {
         };
         reducer.finalize_turn(mark);
         self.persist_reducer(task_id, &mut reducer);
-        let answer = reducer.answer_markdown();
+        let answer = reducer.final_answer_markdown();
         let finished = now_ms();
         let result = RunResult {
             task_id: task_id.into(),

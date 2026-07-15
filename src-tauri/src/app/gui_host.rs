@@ -441,7 +441,8 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
             let (w, h) = popover_size_from_config();
             toggle_popover(app, None, w, h);
         }
-        menu_id::HISTORY => open_or_focus_history(app),
+        // Backward-compatible for stale tray/menu events from older builds.
+        menu_id::HISTORY => open_or_focus_main(app, None),
         menu_id::SETTINGS => open_or_focus_settings(app, None),
         menu_id::RESTART_DAEMON => {
             let _ = crate::daemon::restart(false);
@@ -599,24 +600,6 @@ fn open_or_focus_main(app: &AppHandle, task_id: Option<&str>) {
     }
 }
 
-fn open_or_focus_history(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window(window_label::HISTORY) {
-        let _ = w.show();
-        let _ = w.set_focus();
-        return;
-    }
-    let _ = WebviewWindowBuilder::new(
-        app,
-        window_label::HISTORY,
-        WebviewUrl::App(surface_url("history", None).into()),
-    )
-    .title("GrokTask History")
-    .inner_size(960.0, 720.0)
-    .min_inner_size(640.0, 480.0)
-    .visible(true)
-    .build();
-}
-
 fn open_or_focus_settings(app: &AppHandle, section: Option<&str>) {
     // Whitelist before any eval / URL construction so IPC cannot inject script.
     let section = tray::sanitize_settings_section(section);
@@ -683,7 +666,8 @@ fn apply_nav(app: &AppHandle, cmd: GuiNavCommand) {
             };
             open_or_focus_main(app, task_id);
         }
-        GuiNavCommand::OpenHistory => open_or_focus_history(app),
+        // ACP records are now folded into the main task timeline.
+        GuiNavCommand::OpenHistory => open_or_focus_main(app, None),
         GuiNavCommand::OpenSettings { section, cwd } => {
             remember_workspace_cwd(app, cwd.as_deref());
             open_or_focus_settings(app, section.as_deref());

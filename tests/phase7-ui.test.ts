@@ -1,7 +1,6 @@
 import { mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App.vue";
-import HistoryView from "../src/views/HistoryView.vue";
 import PopoverView from "../src/views/PopoverView.vue";
 import * as ipc from "../src/lib/ipc";
 import * as settings from "../src/lib/settings";
@@ -49,8 +48,8 @@ describe("Phase 7 Chinese shell + History + Popover", () => {
     const w = mount(App, { attachTo: document.body });
     await w.vm.$nextTick();
 
-    expect(w.find('[data-testid="app-nav"]').text()).toMatch(/任务/);
-    expect(w.find('[data-testid="app-nav"]').text()).toMatch(/ACP 记录/);
+    expect(w.find('[data-testid="app-nav"]').text()).toMatch(/任务记录/);
+    expect(w.find('[data-testid="app-nav"]').text()).not.toMatch(/ACP 记录/);
     expect(w.find('[data-testid="app-nav"]').text()).toMatch(/设置/);
     expect(w.text()).not.toMatch(/Phase 5/);
     expect(w.find('[data-testid="app-header"]').exists()).toBe(true);
@@ -58,40 +57,34 @@ describe("Phase 7 Chinese shell + History + Popover", () => {
     w.unmount();
   });
 
-  it("History/ACP records page renders task list and opens details", async () => {
+  it("legacy history route opens the unified task records page", async () => {
     vi.spyOn(ipc, "fetchTaskList").mockResolvedValue(sampleList);
-    const openSpy = vi.fn();
-    window.addEventListener("groktask-open-task", openSpy as EventListener);
+    vi.spyOn(ipc, "fetchTaskDetail").mockImplementation(async (id) => {
+      const d = mockTaskDetail();
+      d.task.taskId = id ?? "task-a";
+      d.title = id === "task-b" ? "审查 PR" : "实现登录页";
+      return d;
+    });
+    window.history.replaceState({}, "", "?view=history");
 
-    const w = mount(HistoryView, { attachTo: document.body });
+    const w = mount(App, { attachTo: document.body });
     await new Promise((r) => setTimeout(r, 30));
     await w.vm.$nextTick();
 
-    expect(w.find('[data-testid="history-view"]').exists()).toBe(true);
-    expect(w.text()).toMatch(/ACP 记录/);
-    expect(w.find('[data-testid="history-count"]').text()).toMatch(/2/);
-    const rows = w.findAll('[data-testid="history-task-row"]');
-    expect(rows.length).toBe(2);
+    expect(w.find('[data-testid="task-shell"]').exists()).toBe(true);
     expect(w.text()).toContain("实现登录页");
     expect(w.text()).not.toContain("session/update");
-
-    await rows[0].trigger("click");
-    await w.vm.$nextTick();
-    expect(openSpy).toHaveBeenCalled();
-    const detail = (openSpy.mock.calls[0][0] as CustomEvent).detail;
-    expect(detail.taskId).toBeTruthy();
-
-    window.removeEventListener("groktask-open-task", openSpy as EventListener);
     w.unmount();
   });
 
-  it("History empty state when daemon has no tasks", async () => {
+  it("unified task records empty state when daemon has no tasks", async () => {
     vi.spyOn(ipc, "fetchTaskList").mockResolvedValue([]);
-    const w = mount(HistoryView, { attachTo: document.body });
+    window.history.replaceState({}, "", "?view=task");
+    const w = mount(App, { attachTo: document.body });
     await new Promise((r) => setTimeout(r, 20));
     await w.vm.$nextTick();
-    expect(w.find('[data-testid="history-empty"]').exists()).toBe(true);
-    expect(w.text()).toMatch(/暂无任务记录/);
+    expect(w.find('[data-testid="task-empty"]').exists()).toBe(true);
+    expect(w.text()).toMatch(/暂无任务/);
     w.unmount();
   });
 
@@ -130,7 +123,7 @@ describe("Phase 7 Chinese shell + History + Popover", () => {
   });
 
   it("App opens task when history dispatches open-task", async () => {
-    window.history.replaceState({}, "", "?view=history");
+    window.history.replaceState({}, "", "?view=task");
     vi.spyOn(ipc, "fetchTaskList").mockResolvedValue(sampleList);
     vi.spyOn(ipc, "fetchTaskDetail").mockImplementation(async (id) => {
       const d = mockTaskDetail();
@@ -143,7 +136,7 @@ describe("Phase 7 Chinese shell + History + Popover", () => {
     await new Promise((r) => setTimeout(r, 30));
     await w.vm.$nextTick();
 
-    expect(w.find('[data-testid="history-view"]').exists()).toBe(true);
+    expect(w.find('[data-testid="task-shell"]').exists()).toBe(true);
 
     window.dispatchEvent(
       new CustomEvent("groktask-open-task", {
