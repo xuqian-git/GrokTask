@@ -62,7 +62,9 @@ pub struct DoctorReport {
     pub tray_mode: Option<String>,
 }
 
-/// Resolve Grok executable: config override → `GROK_EXECUTABLE` → PATH.
+/// Resolve Grok executable: config override → `GROK_EXECUTABLE` → PATH →
+/// common user install locations. GUI apps launched from Finder do not inherit
+/// the user's shell PATH, so diagnostics must match the daemon fallback.
 pub fn resolve_grok_executable(config: Option<&AppConfig>) -> Option<PathBuf> {
     if let Some(cfg) = config {
         if let Some(ref p) = cfg.general.grok_executable {
@@ -78,7 +80,22 @@ pub fn resolve_grok_executable(config: Option<&AppConfig>) -> Option<PathBuf> {
             return Some(path);
         }
     }
-    which_binary("grok")
+    which_binary("grok").or_else(|| {
+        common_grok_paths()
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn common_grok_paths() -> Vec<PathBuf> {
+    let home = crate::paths::home();
+    vec![
+        home.join(".local/bin/grok"),
+        home.join(".grok/bin/grok"),
+        home.join("bin/grok"),
+        PathBuf::from("/opt/homebrew/bin/grok"),
+        PathBuf::from("/usr/local/bin/grok"),
+    ]
 }
 
 fn which_binary(name: &str) -> Option<PathBuf> {

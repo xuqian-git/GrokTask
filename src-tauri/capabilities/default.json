@@ -14,6 +14,7 @@
     "core:window:allow-start-dragging",
     "allow-settings-get",
     "allow-settings-set-tray-mode",
+    "allow-settings-set-history-limit",
     "allow-agents-status",
     "allow-agents-install",
     "allow-agents-remove",
@@ -25,6 +26,7 @@
     "allow-daemon-status-text",
     "allow-daemon-restart",
     "allow-tasks-list",
-    "allow-tasks-show"
+    "allow-tasks-show",
+    "allow-history-clear"
   ]
 }

@@ -39,6 +39,15 @@ pub mod commands {
         pub status: Option<AgentIntegrationStatus>,
     }
 
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct HistoryClearResult {
+        pub deleted: usize,
+        pub skipped: usize,
+        pub protected: i64,
+        pub settings: SettingsSnapshot,
+    }
+
     fn tray_mode_str(m: TrayMode) -> &'static str {
         match m {
             TrayMode::Off => "off",
@@ -101,6 +110,23 @@ pub mod commands {
         let _ = crate::app::login_item::sync_login_item_for_mode(tray);
         // Reflect tray presence immediately (create/remove) without restart.
         crate::app::gui_host::apply_tray_mode_runtime(&app, tray);
+        settings_get()
+    }
+
+    #[tauri::command]
+    pub fn settings_set_history_limit(limit: u32) -> Result<SettingsSnapshot, String> {
+        if limit > 5000 {
+            return Err("historyLimit must be 0–5000".into());
+        }
+        let mut doc = ConfigDocument::load().map_err(|e| e.to_string())?;
+        doc.config.general.history_limit = limit;
+        doc.save().map_err(|e| e.to_string())?;
+        // Apply the new limit immediately. Failures should surface because the
+        // user explicitly asked to edit retention.
+        let conn = crate::storage::open_path(&crate::paths::history_db())
+            .map_err(|e| format!("open history db: {e}"))?;
+        crate::storage::retention::run_retention(&conn, limit, now_ms())
+            .map_err(|e| e.to_string())?;
         settings_get()
     }
 
@@ -203,7 +229,7 @@ pub mod commands {
                 Ok(WorkflowActionResult {
                     ok: true,
                     message: Some(format!(
-                        "已写入 {} 全局协作指令到 {}。Agent 下次会话将读取该文件。",
+                        "已写入 {} 全局自动触发指令到 {}。Agent 下次会话将读取该文件。",
                         id.as_str(),
                         report
                             .agents
@@ -312,6 +338,24 @@ pub mod commands {
         decode_task_detail(v)
     }
 
+    /// Clear eligible task history. Active / protected tasks are kept.
+    #[tauri::command]
+    pub fn history_clear() -> Result<HistoryClearResult, String> {
+        let conn = crate::storage::open_path(&crate::paths::history_db())
+            .map_err(|e| format!("open history db: {e}"))?;
+        let now = now_ms();
+        let protected =
+            crate::storage::retention::count_protected(&conn, now).map_err(|e| e.to_string())?;
+        let result =
+            crate::storage::retention::run_retention(&conn, 0, now).map_err(|e| e.to_string())?;
+        Ok(HistoryClearResult {
+            deleted: result.deleted_ids.len(),
+            skipped: result.skipped,
+            protected,
+            settings: settings_get()?,
+        })
+    }
+
     /// Pure decode helpers (unit-tested without a live daemon).
     pub(crate) fn decode_tasks_list(v: Value) -> Result<Vec<TaskListItem>, String> {
         serde_json::from_value(v).map_err(|e| format!("tasks.list decode: {e}"))
@@ -319,6 +363,13 @@ pub mod commands {
 
     pub(crate) fn decode_task_detail(v: Value) -> Result<TaskDetail, String> {
         serde_json::from_value(v).map_err(|e| format!("tasks.show decode: {e}"))
+    }
+
+    fn now_ms() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
     }
 }
 

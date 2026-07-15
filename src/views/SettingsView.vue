@@ -8,6 +8,7 @@ import {
   type SettingsSnapshot,
   type TrayMode,
   type WorkflowStatus,
+  clearHistory,
   disableWorkflow,
   enableWorkflow,
   fetchAgentsStatus,
@@ -16,6 +17,7 @@ import {
   fetchWorkspaceCwd,
   installAgent,
   removeAgent,
+  setHistoryLimit,
   setTrayMode,
 } from "@/lib/settings";
 
@@ -35,6 +37,9 @@ const busyWorkflow = ref<AgentId | null>(null);
 const actionMessage = ref<string | null>(null);
 const actionOk = ref<boolean | null>(null);
 const traySaving = ref(false);
+const historySaving = ref(false);
+const historyClearing = ref(false);
+const historyLimitInput = ref("200");
 
 /** In-flight doctor fetch so repeated Diagnostics tab clicks share one request. */
 let doctorInFlight: Promise<void> | null = null;
@@ -118,12 +123,22 @@ async function refreshEssentials() {
       fetchAgentsStatus(undefined),
     ]);
     settings.value = s;
+    historyLimitInput.value = String(s.historyLimit);
     workspaceCwd.value = cwd;
     agents.value = a.agents;
   } finally {
     loading.value = false;
   }
 }
+
+watch(
+  () => settings.value?.historyLimit,
+  (limit) => {
+    if (typeof limit === "number" && !historySaving.value) {
+      historyLimitInput.value = String(limit);
+    }
+  },
+);
 
 /**
  * Lazy doctor_report for the Diagnostics tab only.
@@ -257,7 +272,7 @@ async function onWorkflowEnable(agent: AgentId) {
     const result = await enableWorkflow(agent);
     actionOk.value = result.ok;
     actionMessage.value =
-      result.message ?? (result.ok ? "已启用协作指令。" : "启用失败。");
+      result.message ?? (result.ok ? "已启用自动触发指令。" : "启用失败。");
     if (result.status) {
       patchAgent(result.status);
     } else {
@@ -286,7 +301,7 @@ async function onWorkflowDisable(agent: AgentId) {
     const result = await disableWorkflow(agent);
     actionOk.value = result.ok;
     actionMessage.value =
-      result.message ?? (result.ok ? "已禁用协作指令。" : "禁用失败。");
+      result.message ?? (result.ok ? "已禁用自动触发指令。" : "禁用失败。");
     if (result.status) {
       patchAgent(result.status);
     } else {
@@ -298,6 +313,48 @@ async function onWorkflowDisable(agent: AgentId) {
     actionMessage.value = e instanceof Error ? e.message : String(e);
   } finally {
     busyWorkflow.value = null;
+  }
+}
+
+async function onSaveHistoryLimit() {
+  const n = Number(historyLimitInput.value);
+  if (!Number.isFinite(n) || n < 0 || n > 5000 || !Number.isInteger(n)) {
+    actionOk.value = false;
+    actionMessage.value = "历史条数上限必须是 0–5000 之间的整数。";
+    return;
+  }
+  historySaving.value = true;
+  actionMessage.value = null;
+  try {
+    settings.value = await setHistoryLimit(n);
+    historyLimitInput.value = String(settings.value.historyLimit);
+    actionOk.value = true;
+    actionMessage.value = `历史保留上限已设为 ${settings.value.historyLimit}。`;
+  } catch (e) {
+    actionOk.value = false;
+    actionMessage.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    historySaving.value = false;
+  }
+}
+
+async function onClearHistory() {
+  if (!window.confirm("确定清空历史任务记录吗？运行中任务会被保留。")) {
+    return;
+  }
+  historyClearing.value = true;
+  actionMessage.value = null;
+  try {
+    const result = await clearHistory();
+    settings.value = result.settings;
+    historyLimitInput.value = String(result.settings.historyLimit);
+    actionOk.value = true;
+    actionMessage.value = `已清空 ${result.deleted} 条历史记录；保留 ${result.protected} 条运行中或受保护任务。`;
+  } catch (e) {
+    actionOk.value = false;
+    actionMessage.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    historyClearing.value = false;
   }
 }
 
@@ -465,16 +522,10 @@ watch(section, (next) => {
       <!-- Tools / Integrations -->
       <div
         v-else-if="section === 'integrations'"
-        class="panel section"
+        class="section integrations-section"
         data-testid="section-integrations"
       >
         <h2>工具开关</h2>
-        <p class="intro">
-          两层集成相互独立：<strong>MCP 服务</strong>只让 Agent 能调用
-          <code>groktask</code>
-          工具；<strong>协作指令</strong>写入全局用户指令文件，引导 Agent
-          在编码时主动使用 GrokTask。仅安装 MCP 不会自动启用协作指令。
-        </p>
         <p class="workspace-line" data-testid="workspace-cwd">
           <span class="label">当前工作区（任务上下文 / 可选）</span>
           <code>{{
@@ -486,7 +537,7 @@ watch(section, (next) => {
           class="hint"
           data-testid="workspace-cwd-missing"
         >
-          未选定项目工作区。协作指令写入全局用户文件，不依赖工作区；任务 cwd
+          未选定项目工作区。自动触发指令写入全局用户文件，不依赖工作区；任务 cwd
           可在项目目录中运行 <code>GrokTask setup</code> 后用于上下文展示。
         </p>
 
@@ -574,7 +625,7 @@ watch(section, (next) => {
           <!-- Workflow layer -->
           <div class="layer" data-testid="workflow-layer">
             <div class="layer-head">
-              <strong>协作指令</strong>
+              <strong>自动触发指令</strong>
               <span
                 class="status-pill"
                 :data-status="card.workflowStatus"
@@ -722,19 +773,47 @@ watch(section, (next) => {
       <!-- History settings -->
       <div v-else class="panel section" data-testid="section-history">
         <h2>历史保留</h2>
-        <div class="meta-grid">
-          <div>
+        <form
+          class="history-form"
+          data-testid="history-limit-form"
+          @submit.prevent="onSaveHistoryLimit"
+        >
+          <label>
             <span class="label">历史条数上限</span>
-            <span data-testid="history-limit">{{ settings.historyLimit }}</span>
-            <span class="hint">本地 SQLite 保留的任务数</span>
+            <input
+              v-model="historyLimitInput"
+              type="number"
+              min="0"
+              max="5000"
+              step="1"
+              inputmode="numeric"
+              data-testid="history-limit-input"
+            />
+            <span class="hint">本地 SQLite 保留的任务数，范围 0–5000。</span>
+          </label>
+          <button
+            type="submit"
+            :disabled="historySaving"
+            data-testid="save-history-limit"
+          >
+            {{ historySaving ? "保存中…" : "保存" }}
+          </button>
+        </form>
+        <div class="danger-zone">
+          <div>
+            <strong>清空历史</strong>
+            <span class="hint">删除已完成/失败/取消等可清理任务；运行中与受保护任务会保留。</span>
           </div>
+          <button
+            type="button"
+            class="danger"
+            :disabled="historyClearing"
+            data-testid="clear-history"
+            @click="onClearHistory"
+          >
+            {{ historyClearing ? "清空中…" : "清空历史" }}
+          </button>
         </div>
-        <p class="hint">
-          清空历史将在存储清理 API 安全暴露后提供。当前版本不提供破坏性清空。
-        </p>
-        <button type="button" disabled data-testid="clear-history-disabled">
-          清空历史（暂不可用）
-        </button>
       </div>
     </template>
   </section>
@@ -774,11 +853,11 @@ watch(section, (next) => {
   margin: 0 0 12px;
   font-size: 15px;
 }
-.intro {
-  margin: 0 0 12px;
-  font-size: 13px;
-  color: var(--subtle);
-  line-height: 1.45;
+.integrations-section {
+  margin: 0 16px 16px;
+}
+.integrations-section h2 {
+  margin-left: 2px;
 }
 .workspace-line {
   margin: 0 0 16px;
@@ -853,7 +932,7 @@ watch(section, (next) => {
   border-radius: 12px;
   padding: 14px;
   margin-bottom: 12px;
-  background: var(--bg);
+  background: var(--card);
 }
 .card-head {
   display: flex;
@@ -924,7 +1003,9 @@ watch(section, (next) => {
   flex-wrap: wrap;
 }
 .card-actions button,
-.section > button {
+.section > button,
+.history-form button,
+.danger-zone button {
   border: 1px solid var(--border);
   background: var(--card);
   color: var(--fg);
@@ -934,12 +1015,53 @@ watch(section, (next) => {
   cursor: pointer;
 }
 .card-actions button:disabled,
-.section > button:disabled {
+.section > button:disabled,
+.history-form button:disabled,
+.danger-zone button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
-.card-actions button.danger {
+.card-actions button.danger,
+.danger-zone button.danger {
   color: var(--danger);
+}
+.history-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.history-form label {
+  min-width: 220px;
+}
+.history-form .label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--subtle);
+  margin-bottom: 4px;
+}
+.history-form input {
+  width: 160px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+  color: var(--fg);
+  padding: 7px 10px;
+}
+.danger-zone {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.danger-zone strong {
+  display: block;
+  font-size: 13px;
 }
 .reminder {
   margin-top: 10px;

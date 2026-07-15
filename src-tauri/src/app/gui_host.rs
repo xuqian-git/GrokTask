@@ -153,6 +153,7 @@ fn run_impl(launch: GuiHostLaunch) -> ! {
         .invoke_handler(tauri::generate_handler![
             commands::settings_get,
             commands::settings_set_tray_mode,
+            commands::settings_set_history_limit,
             commands::agents_status,
             commands::agents_install,
             commands::agents_remove,
@@ -165,6 +166,7 @@ fn run_impl(launch: GuiHostLaunch) -> ! {
             commands::daemon_restart,
             commands::tasks_list,
             commands::tasks_show,
+            commands::history_clear,
         ])
         .on_window_event(|window, event| {
             // Hide popover on focus loss (click outside); do not cancel tasks.

@@ -6,6 +6,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "settings_get",
             "settings_set_tray_mode",
+            "settings_set_history_limit",
             "agents_status",
             "agents_install",
             "agents_remove",
@@ -18,6 +19,7 @@ fn main() {
             "daemon_restart",
             "tasks_list",
             "tasks_show",
+            "history_clear",
         ]),
     ))
     .expect("failed to run tauri-build");

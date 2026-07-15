@@ -52,6 +52,13 @@ export interface ActionResult {
   status?: AgentIntegrationStatus;
 }
 
+export interface HistoryClearResult {
+  deleted: number;
+  skipped: number;
+  protected: number;
+  settings: SettingsSnapshot;
+}
+
 export interface GrokCliStatus {
   state:
     "not_found" | "found" | "logged_in" | "not_logged_in" | "version_unknown";
@@ -144,6 +151,34 @@ export async function setTrayMode(mode: TrayMode): Promise<SettingsSnapshot> {
     return { ...mockSettings };
   }
   return invokeTauri<SettingsSnapshot>("settings_set_tray_mode", { mode });
+}
+
+export async function setHistoryLimit(
+  limit: number,
+): Promise<SettingsSnapshot> {
+  if (!Number.isFinite(limit) || limit < 0 || limit > 5000) {
+    throw new Error("历史条数上限必须在 0–5000 之间");
+  }
+  const normalized = Math.floor(limit);
+  if (!isTauriRuntime()) {
+    mockSettings.historyLimit = normalized;
+    return { ...mockSettings };
+  }
+  return invokeTauri<SettingsSnapshot>("settings_set_history_limit", {
+    limit: normalized,
+  });
+}
+
+export async function clearHistory(): Promise<HistoryClearResult> {
+  if (!isTauriRuntime()) {
+    return {
+      deleted: 0,
+      skipped: 0,
+      protected: 0,
+      settings: { ...mockSettings },
+    };
+  }
+  return invokeTauri<HistoryClearResult>("history_clear");
 }
 
 export async function fetchWorkspaceCwd(): Promise<string> {
@@ -249,7 +284,7 @@ export async function enableWorkflow(
     const status = mockAgents.find((a) => a.agent === agent);
     return {
       ok: true,
-      message: `已写入协作指令到 ${status?.workflowPath ?? "指令文件"}。`,
+      message: `已写入自动触发指令到 ${status?.workflowPath ?? "指令文件"}。`,
       status,
     };
   }
@@ -283,7 +318,7 @@ export async function disableWorkflow(
     const status = mockAgents.find((a) => a.agent === agent);
     return {
       ok: true,
-      message: "已移除 GrokTask 托管协作指令区块。",
+      message: "已移除 GrokTask 托管自动触发指令区块。",
       status,
     };
   }

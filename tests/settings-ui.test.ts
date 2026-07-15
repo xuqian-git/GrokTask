@@ -57,6 +57,8 @@ describe("Settings UI (Phase 7)", () => {
     expect(workflowPath).toMatch(/\.codex/);
     expect(workflowPath).not.toContain("/mock/workspace");
     expect(w.text()).toMatch(/指令文件（全局）/);
+    expect(w.text()).toMatch(/自动触发指令/);
+    expect(w.text()).not.toMatch(/协作指令/);
     expect(codex.find('[data-testid="agent-install"]').exists()).toBe(true);
     expect(codex.find('[data-testid="workflow-enable"]').exists()).toBe(true);
     expect(codex.find('[data-testid="agent-reminder"]').exists()).toBe(true);
@@ -328,6 +330,39 @@ describe("Settings UI (Phase 7)", () => {
     expect(w.find('[data-testid="grok-state"]').exists()).toBe(true);
     expect(w.find('[data-testid="tray-capability"]').exists()).toBe(true);
     expect(w.text()).toMatch(/诊断/);
+
+    w.unmount();
+  });
+
+  it("history settings can edit retention limit and clear history", async () => {
+    settings.resetSettingsMocksForTests();
+    const limitSpy = vi.spyOn(settings, "setHistoryLimit");
+    const clearSpy = vi.spyOn(settings, "clearHistory");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    const w = mount(SettingsView, { attachTo: document.body });
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    await w.find('[data-testid="tab-history"]').trigger("click");
+    await w.vm.$nextTick();
+
+    const input = w.find('[data-testid="history-limit-input"]');
+    expect(input.exists()).toBe(true);
+    await input.setValue("123");
+    await w.find('[data-testid="history-limit-form"]').trigger("submit");
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    expect(limitSpy).toHaveBeenCalledWith(123);
+    expect(w.find('[data-testid="action-result"]').text()).toMatch(/123/);
+
+    await w.find('[data-testid="clear-history"]').trigger("click");
+    await new Promise((r) => setTimeout(r, 20));
+    await w.vm.$nextTick();
+
+    expect(clearSpy).toHaveBeenCalled();
+    expect(w.find('[data-testid="action-result"]').text()).toMatch(/清空/);
 
     w.unmount();
   });
