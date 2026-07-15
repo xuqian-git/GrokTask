@@ -123,17 +123,17 @@ pub fn tool_defs() -> Vec<Value> {
     vec![
         json!({
             "name": "run",
-            "description": "Start a Grok task and block until the turn finishes. Sends the task to the external xAI Grok service. mode must be explicit read|write (write may modify cwd). Progress is persisted locally. Prefer start for long background work.",
+            "description": "delegate an implementation, debugging, refactor, or review task to external xAI Grok Build and block until the turn finishes. Use for non-trivial code work after the host agent has planned the task. mode must be explicit read|write (write may modify cwd). Progress is persisted locally. Prefer start for long background work.",
             "inputSchema": task_input_schema(false)
         }),
         json!({
             "name": "start",
-            "description": "Start a daemon-owned Grok task and return immediately with taskId+turnId. Requires caller-generated submissionId (UUID) for exactly-once retry. mode must be explicit read|write. Disconnect does not cancel the task — use cancel.",
+            "description": "delegate a long-running implementation, debugging, refactor, or review task to external xAI Grok Build and return immediately with taskId+turnId. Use when the host agent should continue monitoring/reviewing instead of blocking. Requires caller-generated submissionId (UUID) for exactly-once retry. mode must be explicit read|write. Disconnect does not cancel the task — use cancel.",
             "inputSchema": task_input_schema(true)
         }),
         json!({
             "name": "status",
-            "description": "Snapshot status for a taskId returned by run/start. Non-blocking; does not return full transcript.",
+            "description": "Snapshot status for a delegated Grok taskId returned by run/start. Non-blocking; does not return full transcript.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -145,7 +145,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "wait",
-            "description": "Wait for a specific (taskId, turnId) to finish. Returns immutable RunResult or timedOut snapshot. Always pass the original turnId from start/run.",
+            "description": "Wait for a specific delegated Grok turn (taskId, turnId) to finish. Returns immutable RunResult or timedOut snapshot. Always pass the original turnId from start/run.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -159,7 +159,7 @@ pub fn tool_defs() -> Vec<Value> {
         }),
         json!({
             "name": "cancel",
-            "description": "Cancel a turn (taskId+turnId) or recovery (taskId+recoveryId). Idempotent for terminal turns. Does not affect later turns on the same task.",
+            "description": "Cancel a delegated Grok turn (taskId+turnId) or recovery (taskId+recoveryId). Idempotent for terminal turns. Does not affect later turns on the same task.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -393,6 +393,12 @@ mod tests {
         let d = run["description"].as_str().unwrap();
         assert!(d.contains("xAI Grok") || d.contains("Grok"));
         assert!(d.contains("read") && d.contains("write"));
+        assert!(d.contains("delegate") || d.contains("委派"));
+        assert!(d.contains("implementation") || d.contains("实现"));
+        let start = tools.iter().find(|t| t["name"] == "start").unwrap();
+        let start_d = start["description"].as_str().unwrap();
+        assert!(start_d.contains("long") || start_d.contains("background"));
+        assert!(start_d.contains("delegate") || start_d.contains("委派"));
     }
 
     #[test]

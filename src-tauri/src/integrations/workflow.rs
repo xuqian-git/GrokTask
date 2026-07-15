@@ -31,17 +31,37 @@ const ASKHUMAN_END: &str = "<!-- AskHuman:end -->";
 /// Default instruction body injected inside the managed block.
 pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
 
-当用户要求实现、重构、排查、修复或 review 代码时，你可以主动使用 `groktask` MCP 工具把独立工作交给 Grok Build。
+当用户要求实现、重构、排查、修复、调试或 review 代码时，默认使用 GrokTask，把执行型工作委派给 Grok Build。你必须优先考虑调用 `groktask` MCP；除非命中下方“明确豁免”，不要因为“自己也能写”就跳过 GrokTask。
 
 ### 角色分工
 
 - **你（Codex / Claude Code）**：负责理解需求、规划、架构决策，并在需要时生成/更新 plan、spec 或 checklist。不要把规划职责交给 Grok。
 - **Grok**：按你给出的 plan/文档/spec 与验收标准执行实现、调试、重构或审查；不替代你的规划与最终判断。
 
+### 默认触发
+
+以下情况默认必须使用 GrokTask：
+
+- 需要修改代码，且不是 1–2 行的微小机械改动；
+- 跨文件修改、重构、迁移、UI 调整、测试补齐或构建修复；
+- bug 排查、失败测试分析、性能/稳定性问题诊断；
+- 用户要求 review、第二意见、实现方案验证；
+- 你已经写出 plan/spec/checklist，下一步进入执行。
+
+### 明确豁免
+
+只有以下情况可以不调用 GrokTask，并继续自己处理：
+
+- 纯解释、问答、总结、翻译、文档阅读，不需要代码改动；
+- 微小改动：例如改一个文案、修一个 typo、调整 1–2 行显然代码；
+- 任务涉及 secrets、token、隐私数据，不能安全发送给 Grok；
+- GrokTask 不可用、返回失败、连续两轮修复仍不收敛；
+- 用户明确要求“不要用 Grok/GrokTask”。
+
 ### 默认循环
 
-1. 先理解用户需求与当前仓库状态。对非平凡任务，先产出或更新清晰的 plan/spec/checklist。
-2. 带着该文档/计划上下文与具体验收标准调用 GrokTask：
+1. 先理解用户需求与当前仓库状态。对非微小任务，先产出或更新清晰的 plan/spec/checklist。
+2. 带着该文档/计划上下文、相关文件路径与具体验收标准调用 GrokTask：
    - 需要 Grok 修改代码时使用 `run` 或 `start`，`mode` 设为 `write`；
    - 只需要第二意见、审查或诊断时使用 `mode` 设为 `read`。
 3. Grok 返回代码改动/结果后，你必须 review 并验证，不要盲目信任。
@@ -51,7 +71,7 @@ pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
 
 ### 约束
 
-- 不要为了微小、显然可直接完成的改动调用 GrokTask。
+- 不要为了微小、显然可直接完成的改动调用 GrokTask；但不要把“我能自己做”当成跳过理由。
 - 不要让 Grok 自动提交、推送、创建 PR 或扩大工作目录，除非用户明确要求。
 - 不要把 secrets、token、个人敏感信息发送给 GrokTask。
 - 如果 GrokTask 返回失败、取消或部分结果，如实报告并决定下一步。
@@ -384,6 +404,10 @@ mod tests {
         assert!(text.contains(BLOCK_BEGIN));
         assert!(text.contains(BLOCK_END));
         assert!(text.contains("GrokTask 协作协议"));
+        assert!(text.contains("默认使用 GrokTask"));
+        assert!(text.contains("必须优先考虑调用"));
+        assert!(text.contains("明确豁免"));
+        assert!(text.contains("微小改动"));
         // Idempotent
         let before = fs::read_to_string(&path).unwrap();
         enable(&roots, AgentId::Codex).unwrap();
