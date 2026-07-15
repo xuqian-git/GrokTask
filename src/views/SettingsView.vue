@@ -856,7 +856,9 @@ watch(section, (next) => {
         <div class="danger-zone">
           <div>
             <strong>清空历史</strong>
-            <span class="hint">删除已完成/失败/取消等可清理任务；运行中与受保护任务会保留。</span>
+            <span class="hint"
+              >删除已完成/失败/取消等可清理任务；运行中与受保护任务会保留。</span
+            >
           </div>
           <button
             type="button"

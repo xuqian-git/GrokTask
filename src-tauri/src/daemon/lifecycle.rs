@@ -351,7 +351,7 @@ fn process_is_zombie(pid: u32) -> Option<bool> {
     }
     #[cfg(target_os = "macos")]
     {
-        return process_is_zombie_macos(pid);
+        process_is_zombie_macos(pid)
     }
     #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
     {

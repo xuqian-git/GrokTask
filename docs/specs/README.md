@@ -12,4 +12,3 @@
 研究来源见 `../research/acp-conversation-flow.md`，实施顺序见 `../plans/standalone-refactor.md`。
 
 实现过程中发现真正冲突或必须改变范围时，不自行择一；先记录问题并交由用户确认。
-

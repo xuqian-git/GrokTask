@@ -2,11 +2,10 @@
   color-scheme: light dark;
   --font-sans:
     -apple-system, "SF Pro Text", Inter, ui-sans-serif, system-ui,
-    BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei",
-    sans-serif;
+    BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono:
-    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
-    "Liberation Mono", monospace;
+    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono",
+    monospace;
   --accent: #0a84ff;
   --accent-green: #34c759;
   --accent-orange: #ff9500;
@@ -27,8 +26,7 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
-  font-family:
-    var(--font-sans);
+  font-family: var(--font-sans);
 }
 
 @media (prefers-color-scheme: dark) {
