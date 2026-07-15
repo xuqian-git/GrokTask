@@ -7,7 +7,11 @@ import TimelineView from "@/components/timeline/TimelineView.vue";
 import { fetchTaskDetail, fetchTaskList, sendTaskMessage } from "@/lib/ipc";
 import { getSharedExpansion, replaceSharedExpansionKey } from "@/lib/uiState";
 import type { ExpansionMap } from "@/lib/expansion";
-import type { TaskDetail, TaskListItem } from "@/lib/types";
+import type {
+  TaskContainerStatus,
+  TaskDetail,
+  TaskListItem,
+} from "@/lib/types";
 
 const props = defineProps<{
   /** Prefer this task when opening from History / external navigation. */
@@ -20,16 +24,28 @@ const selectedTaskId = ref<string>("");
 const detail = ref<TaskDetail | null>(null);
 const expansion = ref<ExpansionMap>({});
 const loading = ref(true);
-const refreshing = ref(false);
 const sending = ref(false);
 const error = ref<string | null>(null);
 const sidebarCollapsed = ref(false);
 let refreshTimer: number | null = null;
 
+const ACTIVE_TASK_STATUSES = new Set<TaskContainerStatus>([
+  "queued",
+  "starting",
+  "running",
+  "cancelling",
+  "recovering",
+]);
+
 const statusLabel = computed(() => detail.value?.task.status ?? "");
 const modeLabel = computed(() =>
   (detail.value?.task.mode ?? "read").toUpperCase(),
 );
+const activityText = computed(() => {
+  const task = detail.value?.task;
+  if (!task || !ACTIVE_TASK_STATUSES.has(task.status)) return "";
+  return task.latestAction?.trim() ?? "";
+});
 
 async function loadDetail(taskId: string) {
   loading.value = true;
@@ -59,7 +75,6 @@ async function refreshDetail(taskId: string) {
 }
 
 async function refreshList(opts: { selectIfEmpty?: boolean } = {}) {
-  refreshing.value = true;
   try {
     const next = await fetchTaskList();
     tasks.value = next;
@@ -74,8 +89,6 @@ async function refreshList(opts: { selectIfEmpty?: boolean } = {}) {
     if (!tasks.value.length) {
       error.value = e instanceof Error ? e.message : String(e);
     }
-  } finally {
-    refreshing.value = false;
   }
 }
 
@@ -203,15 +216,12 @@ onUnmounted(() => {
             }}</span>
           </p>
         </div>
-        <p v-if="detail.task.latestAction" class="action">
-          {{ detail.task.latestAction }}
-        </p>
-        <span
-          v-if="refreshing"
-          class="refreshing"
-          data-testid="task-refreshing"
-          aria-label="正在刷新任务"
-        />
+        <div v-if="activityText" class="activity" data-testid="task-activity">
+          <p class="action">
+            {{ activityText }}
+          </p>
+          <span class="activity-dot" aria-hidden="true" />
+        </div>
       </header>
 
       <p v-if="loading" class="hint">加载任务…</p>
@@ -303,13 +313,19 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.activity {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 40%;
+}
 .action {
   margin: 0;
   font-size: 12px;
   color: var(--subtle);
-  max-width: 40%;
 }
-.refreshing {
+.activity-dot {
+  flex-shrink: 0;
   width: 7px;
   height: 7px;
   margin-top: 7px;

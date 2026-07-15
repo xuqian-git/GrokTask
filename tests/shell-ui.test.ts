@@ -111,6 +111,61 @@ describe("conversation shell layouts", () => {
     w.unmount();
   });
 
+  it("TaskView only shows activity for active tasks with meaningful text", async () => {
+    resetUiStateForTests();
+    const list: TaskListItem[] = [
+      {
+        taskId: "task-live-1",
+        title: "Live task",
+        cwd: "/tmp/live",
+        mode: "write",
+        status: "running",
+        createdAt: "2026-07-15T00:00:00.000Z",
+        updatedAt: "2026-07-15T00:01:00.000Z",
+      },
+    ];
+    const nextDetail = mockTaskDetail();
+    nextDetail.task.taskId = "task-live-1";
+    nextDetail.task.status = "running";
+    nextDetail.task.latestAction = "   ";
+
+    vi.spyOn(ipc, "fetchTaskList").mockResolvedValue(list);
+    vi.spyOn(ipc, "fetchTaskDetail").mockImplementation(async () =>
+      JSON.parse(JSON.stringify(nextDetail)),
+    );
+
+    const w = mount(TaskView, { attachTo: document.body });
+    await new Promise((r) => setTimeout(r, 30));
+    await w.vm.$nextTick();
+
+    expect(w.find('[data-testid="task-activity"]').exists()).toBe(false);
+
+    nextDetail.task.latestAction = "Reading TaskView.vue";
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((r) => setTimeout(r, 30));
+    await w.vm.$nextTick();
+
+    const activity = w.find('[data-testid="task-activity"]');
+    expect(activity.exists()).toBe(true);
+    expect(activity.text()).toContain("Reading TaskView.vue");
+    expect(activity.find(".activity-dot").exists()).toBe(true);
+
+    nextDetail.task.latestAction = "\n\t";
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((r) => setTimeout(r, 30));
+    await w.vm.$nextTick();
+    expect(w.find('[data-testid="task-activity"]').exists()).toBe(false);
+
+    nextDetail.task.latestAction = "Stale completed action";
+    nextDetail.task.status = "idle";
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((r) => setTimeout(r, 30));
+    await w.vm.$nextTick();
+    expect(w.find('[data-testid="task-activity"]').exists()).toBe(false);
+
+    w.unmount();
+  });
+
   it("TaskView composer sends a follow-up turn for the selected task", async () => {
     resetUiStateForTests();
     const list: TaskListItem[] = [
