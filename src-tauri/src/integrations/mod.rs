@@ -17,10 +17,10 @@ pub use types::{
     McpEntryTemplate, WorkflowStatus,
 };
 
-// Ensure IntegrationStatus stays in the public surface used by CLI/tests.
+// Ensure IntegrationStatus and WorkflowStatus stay in the public surface used by CLI/tests.
 #[allow(dead_code)]
-fn _status_surface() -> IntegrationStatus {
-    IntegrationStatus::NotInstalled
+fn _status_surface() -> (IntegrationStatus, WorkflowStatus) {
+    (IntegrationStatus::NotInstalled, WorkflowStatus::NotEnabled)
 }
 
 use std::path::{Path, PathBuf};
