@@ -129,14 +129,14 @@ struct DaemonState {
 async fn handle_connection(
     stream: IpcStream,
     state: Arc<DaemonState>,
-    _shutdown: watch::Sender<bool>,
+    shutdown: watch::Sender<bool>,
 ) -> Result<()> {
     #[cfg(unix)]
     {
         let unix = stream.into_unix()?;
         let (reader, mut writer) = unix.into_split();
         let mut reader = BufReader::new(reader);
-        serve_client(&mut reader, &mut writer, state).await
+        serve_client(&mut reader, &mut writer, state, shutdown).await
     }
     #[cfg(windows)]
     {
@@ -144,12 +144,12 @@ async fn handle_connection(
             IpcStream::WindowsServer(s) => {
                 let (mut reader, mut writer) = tokio::io::split(s);
                 let mut reader = BufReader::new(reader);
-                serve_client(&mut reader, &mut writer, state).await
+                serve_client(&mut reader, &mut writer, state, shutdown).await
             }
             IpcStream::Windows(s) => {
                 let (mut reader, mut writer) = tokio::io::split(s);
                 let mut reader = BufReader::new(reader);
-                serve_client(&mut reader, &mut writer, state).await
+                serve_client(&mut reader, &mut writer, state, shutdown).await
             }
             #[cfg(unix)]
             IpcStream::Unix(_) => unreachable!(),
@@ -157,7 +157,12 @@ async fn handle_connection(
     }
 }
 
-async fn serve_client<R, W>(reader: &mut R, writer: &mut W, state: Arc<DaemonState>) -> Result<()>
+async fn serve_client<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    state: Arc<DaemonState>,
+    shutdown: watch::Sender<bool>,
+) -> Result<()>
 where
     R: tokio::io::AsyncBufRead + Unpin,
     W: AsyncWriteExt + Unpin,
@@ -221,8 +226,18 @@ where
     };
 
     write_msg(writer, &ack).await?;
-    if ack.status == HelloStatus::Incompatible {
-        return Ok(());
+    match ack.status {
+        HelloStatus::Ok => {}
+        HelloStatus::Restarting => {
+            // Safe replacement means this daemon must actually give way.
+            // Without this, every newer client sees Restarting forever while
+            // the old process keeps the daemon lock.
+            let _ = shutdown.send(true);
+            return Ok(());
+        }
+        HelloStatus::ReplacementDeferred | HelloStatus::Incompatible => {
+            return Ok(());
+        }
     }
 
     // Business messages (Phase 1 foundations: health + settings.get).
@@ -929,6 +944,90 @@ mod tests {
             write_msg(&mut w, &req).await.unwrap();
             let resp: Response = read_msg(&mut r).await.unwrap().unwrap();
             assert!(resp.ok);
+            drop(w);
+            let _ = server.await;
+            drop(lock);
+
+            match prev {
+                Some(v) => std::env::set_var(GROKTASK_HOME_ENV, v),
+                None => std::env::remove_var(GROKTASK_HOME_ENV),
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn fingerprint_mismatch_restart_ack_requests_shutdown_unix() {
+        #[cfg(unix)]
+        {
+            use crate::ipc::protocol::Hello;
+            use crate::paths;
+
+            let _g = paths::test_env_lock();
+            let tmp = TempDir::new().unwrap();
+            let prev = std::env::var_os(GROKTASK_HOME_ENV);
+            std::env::set_var(GROKTASK_HOME_ENV, tmp.path());
+
+            let lock = match acquire_lock().unwrap() {
+                LockResult::Acquired(g) => g,
+                LockResult::AlreadyRunning => panic!("lock"),
+            };
+            transport::remove_stale_daemon_endpoint();
+            let listener = transport::bind_daemon().unwrap();
+            let endpoint = transport::daemon_endpoint_display();
+            let meta = DaemonMeta::new(
+                &endpoint,
+                BinaryFingerprint {
+                    size: 1,
+                    mtime_ns: 1,
+                },
+            );
+            write_meta(&meta).unwrap();
+            let db_path = tmp.path().join("history.sqlite3");
+            let _ = storage::open_path(&db_path).unwrap();
+            let state = Arc::new(DaemonState {
+                meta: Mutex::new(meta),
+                config: ConfigHandle::new(crate::config::ConfigDocument::default()),
+                barrier: Arc::new(ReplacementBarrier::new()),
+                guards: Arc::new(DeletionGuards::new()),
+                db_path: db_path.clone(),
+                tasks: Arc::new(TaskManager::new(db_path)),
+            });
+            let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+            let server = tokio::spawn({
+                let state = state.clone();
+                async move {
+                    let stream = listener.accept().await.unwrap();
+                    handle_connection(stream, state, shutdown_tx).await.unwrap();
+                }
+            });
+
+            let stream = transport::connect_daemon().await.unwrap();
+            let unix = stream.into_unix().unwrap();
+            let (r, mut w) = unix.into_split();
+            let mut r = BufReader::new(r);
+            let hello = Hello::new(
+                "h-restart",
+                ClientRole::Cli,
+                APP_VERSION,
+                "/tmp/GrokTask-new",
+                BinaryFingerprint {
+                    size: 2,
+                    mtime_ns: 2,
+                },
+                std::process::id(),
+            );
+            write_msg(&mut w, &hello).await.unwrap();
+            let ack: HelloAck = read_msg(&mut r).await.unwrap().unwrap();
+            assert_eq!(ack.status, HelloStatus::Restarting);
+
+            tokio::time::timeout(Duration::from_secs(1), shutdown_rx.changed())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(*shutdown_rx.borrow());
+
             drop(w);
             let _ = server.await;
             drop(lock);

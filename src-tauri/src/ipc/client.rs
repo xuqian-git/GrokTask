@@ -12,6 +12,9 @@ use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
+const HELLO_RETRY_ATTEMPTS: usize = 8;
+const HELLO_RETRY_DELAY: Duration = Duration::from_millis(250);
+
 /// Ensure a daemon is reachable, starting one if needed.
 ///
 /// Delegates to [`daemon::start_detached`], which reclaims stale `daemon.json`
@@ -32,12 +35,36 @@ pub fn ensure_daemon() -> Result<()> {
 
 /// Blocking request helper used by CLI/MCP.
 pub fn request_blocking(role: ClientRole, method: &str, params: Value) -> Result<Response> {
-    ensure_daemon()?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("tokio runtime")?;
-    rt.block_on(request_async(role, method, params))
+    let mut last_restart_reason: Option<String> = None;
+    for attempt in 0..HELLO_RETRY_ATTEMPTS {
+        ensure_daemon()?;
+        match rt.block_on(request_async(role, method, params.clone())) {
+            Ok(resp) => return Ok(resp),
+            Err(e) if hello_restart_reason(&e).is_some() => {
+                last_restart_reason = hello_restart_reason(&e);
+                // A pre-fix daemon may report Restarting but keep holding the
+                // lock forever. Because the daemon only returns Restarting
+                // after its replacement barrier says it is safe, the client can
+                // actively request a restart and then retry the original call.
+                let _ = daemon::restart(false);
+                std::thread::sleep(HELLO_RETRY_DELAY);
+                if attempt + 1 == HELLO_RETRY_ATTEMPTS {
+                    break;
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(anyhow!(
+        "daemon is still restarting{}; retry shortly",
+        last_restart_reason
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default()
+    ))
 }
 
 pub async fn request_async(role: ClientRole, method: &str, params: Value) -> Result<Response> {
@@ -111,6 +138,12 @@ pub async fn request_async(role: ClientRole, method: &str, params: Value) -> Res
             IpcStream::Unix(_) => unreachable!(),
         }
     }
+}
+
+fn hello_restart_reason(e: &anyhow::Error) -> Option<String> {
+    let msg = format!("{e:#}");
+    msg.strip_prefix("daemon hello status Restarting: ")
+        .map(|s| s.to_string())
 }
 
 /// Extract result or map IPC error.
