@@ -25,6 +25,18 @@ describe("Settings UI (Phase 7)", () => {
     expect((checked?.element as HTMLInputElement | undefined)?.value).toBe(
       "active",
     );
+    expect(
+      w
+        .findAll('[data-testid="language-controls"] input')
+        .map((r) => (r.element as HTMLInputElement).value),
+    ).toEqual(["zh-CN", "en"]);
+    expect(
+      w
+        .findAll('[data-testid="theme-controls"] input')
+        .map((r) => (r.element as HTMLInputElement).value),
+    ).toEqual(["dark", "light", "system"]);
+    expect(w.find('[data-testid="popover-size"]').exists()).toBe(false);
+    expect(w.text()).not.toMatch(/最大并发任务|浮层尺寸/);
 
     w.unmount();
   });

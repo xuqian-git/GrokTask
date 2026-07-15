@@ -23,9 +23,9 @@ pub enum ConfigError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LanguagePref {
-    #[default]
     System,
     #[serde(rename = "zh-CN")]
+    #[default]
     ZhCn,
     #[serde(rename = "en")]
     En,
@@ -66,7 +66,7 @@ pub struct GeneralConfig {
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
-            language: LanguagePref::System,
+            language: LanguagePref::ZhCn,
             theme: ThemePref::System,
             tray_mode: TrayMode::Active,
             history_limit: 200,
@@ -223,11 +223,6 @@ impl AppConfig {
         if self.general.history_limit > 5000 {
             return Err(ConfigError::Validation(
                 "historyLimit must be 0–5000".into(),
-            ));
-        }
-        if !(1..=8).contains(&self.general.max_concurrent_tasks) {
-            return Err(ConfigError::Validation(
-                "maxConcurrentTasks must be 1–8".into(),
             ));
         }
         if !(300..=86_400).contains(&self.general.task_timeout_seconds) {
@@ -488,12 +483,12 @@ mod tests {
     }
 
     #[test]
-    fn invalid_max_concurrent() {
+    fn max_concurrent_is_not_validated() {
         let mut cfg = AppConfig::default();
         cfg.general.max_concurrent_tasks = 0;
-        assert!(cfg.validate().is_err());
-        cfg.general.max_concurrent_tasks = 9;
-        assert!(cfg.validate().is_err());
+        assert!(cfg.validate().is_ok());
+        cfg.general.max_concurrent_tasks = 999;
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

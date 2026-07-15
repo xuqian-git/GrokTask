@@ -5,7 +5,9 @@ import {
   type AgentId,
   type AgentIntegrationStatus,
   type DoctorReport,
+  type LanguagePref,
   type SettingsSnapshot,
+  type ThemePref,
   type TrayMode,
   type WorkflowStatus,
   clearHistory,
@@ -16,7 +18,9 @@ import {
   fetchSettings,
   installAgent,
   removeAgent,
+  setLanguage,
   setHistoryLimit,
+  setTheme,
   setTrayMode,
 } from "@/lib/settings";
 
@@ -35,6 +39,8 @@ const busyWorkflow = ref<AgentId | null>(null);
 const actionMessage = ref<string | null>(null);
 const actionOk = ref<boolean | null>(null);
 const traySaving = ref(false);
+const languageSaving = ref(false);
+const themeSaving = ref(false);
 const historySaving = ref(false);
 const historyClearing = ref(false);
 const historyLimitInput = ref("200");
@@ -59,6 +65,24 @@ const trayOptions: { value: TrayMode; label: string; hint: string }[] = [
     hint: "始终显示托盘；安装用户登录项以启动 --gui-host。",
   },
 ];
+
+const languageOptions: { value: LanguagePref; label: string; hint: string }[] =
+  [
+    { value: "zh-CN", label: "中文", hint: "界面显示为简体中文。" },
+    { value: "en", label: "English", hint: "Use English for the interface." },
+  ];
+
+const themeOptions: { value: ThemePref; label: string; hint: string }[] = [
+  { value: "dark", label: "深色", hint: "始终使用深色主题。" },
+  { value: "light", label: "亮色", hint: "始终使用亮色主题。" },
+  { value: "system", label: "系统", hint: "跟随 macOS 外观设置。" },
+];
+
+function applyTheme(theme: ThemePref) {
+  const root = document.documentElement;
+  root.classList.toggle("theme-dark", theme === "dark");
+  root.classList.toggle("theme-light", theme === "light");
+}
 
 function mcpStatusLabel(s: string): string {
   switch (s) {
@@ -120,10 +144,43 @@ async function refreshEssentials() {
       fetchAgentsStatus(undefined),
     ]);
     settings.value = s;
+    applyTheme(s.theme);
     historyLimitInput.value = String(s.historyLimit);
     agents.value = a.agents;
   } finally {
     loading.value = false;
+  }
+}
+
+async function onLanguageChange(language: LanguagePref) {
+  languageSaving.value = true;
+  actionMessage.value = null;
+  try {
+    settings.value = await setLanguage(language);
+    actionOk.value = true;
+    actionMessage.value = `语言已设为「${languageOptions.find((o) => o.value === language)?.label ?? language}」。`;
+  } catch (e) {
+    actionOk.value = false;
+    actionMessage.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    languageSaving.value = false;
+  }
+}
+
+async function onThemeChange(theme: ThemePref) {
+  themeSaving.value = true;
+  actionMessage.value = null;
+  try {
+    const next = await setTheme(theme);
+    settings.value = next;
+    applyTheme(next.theme);
+    actionOk.value = true;
+    actionMessage.value = `主题已设为「${themeOptions.find((o) => o.value === theme)?.label ?? theme}」。`;
+  } catch (e) {
+    actionOk.value = false;
+    actionMessage.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    themeSaving.value = false;
   }
 }
 
@@ -475,27 +532,55 @@ watch(section, (next) => {
           </div>
         </fieldset>
 
+        <fieldset class="field">
+          <legend>语言</legend>
+          <div class="radio-list compact" data-testid="language-controls">
+            <label
+              v-for="opt in languageOptions"
+              :key="opt.value"
+              class="radio-row"
+            >
+              <input
+                type="radio"
+                name="language"
+                :value="opt.value"
+                :checked="settings.language === opt.value"
+                :disabled="languageSaving"
+                @change="onLanguageChange(opt.value)"
+              />
+              <span>
+                <strong>{{ opt.label }}</strong>
+                <span class="hint">{{ opt.hint }}</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset class="field">
+          <legend>主题</legend>
+          <div class="radio-list compact" data-testid="theme-controls">
+            <label
+              v-for="opt in themeOptions"
+              :key="opt.value"
+              class="radio-row"
+            >
+              <input
+                type="radio"
+                name="theme"
+                :value="opt.value"
+                :checked="settings.theme === opt.value"
+                :disabled="themeSaving"
+                @change="onThemeChange(opt.value)"
+              />
+              <span>
+                <strong>{{ opt.label }}</strong>
+                <span class="hint">{{ opt.hint }}</span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
+
         <div class="meta-grid">
-          <div>
-            <span class="label">语言</span>
-            <span data-testid="language-value">{{ settings.language }}</span>
-            <span class="hint">界面默认简体中文</span>
-          </div>
-          <div>
-            <span class="label">主题</span>
-            <span data-testid="theme-value">{{ settings.theme }}</span>
-            <span class="hint">跟随系统</span>
-          </div>
-          <div>
-            <span class="label">浮层尺寸</span>
-            <span data-testid="popover-size">
-              {{ settings.popoverWidth }}×{{ settings.popoverHeight }}
-            </span>
-          </div>
-          <div>
-            <span class="label">最大并发任务</span>
-            <span>{{ settings.maxConcurrentTasks }}</span>
-          </div>
           <div>
             <span class="label">版本</span>
             <span data-testid="app-version">{{ settings.version }}</span>
@@ -843,6 +928,10 @@ watch(section, (next) => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.radio-list.compact {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 .radio-row {
   display: flex;

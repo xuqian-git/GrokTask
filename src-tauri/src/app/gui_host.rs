@@ -154,6 +154,8 @@ fn run_impl(launch: GuiHostLaunch) -> ! {
             commands::settings_get,
             commands::settings_set_tray_mode,
             commands::settings_set_history_limit,
+            commands::settings_set_language,
+            commands::settings_set_theme,
             commands::agents_status,
             commands::agents_install,
             commands::agents_remove,

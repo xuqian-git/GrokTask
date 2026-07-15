@@ -50,6 +50,40 @@
   }
 }
 
+:root.theme-light {
+  --bg: #ffffff;
+  --fg: #1d1d1f;
+  --border: rgba(0, 0, 0, 0.14);
+  --muted-bg: rgba(10, 132, 255, 0.12);
+  --muted-fg: #0a84ff;
+  --card: rgba(0, 0, 0, 0.035);
+  --card-strong: rgba(255, 255, 255, 0.78);
+  --control-bg: rgba(255, 255, 255, 0.82);
+  --control-border: rgba(0, 0, 0, 0.2);
+  --subtle: rgba(0, 0, 0, 0.55);
+  --tertiary: rgba(0, 0, 0, 0.38);
+  --danger: #ff3b30;
+  --success: #34c759;
+  --shadow: 0 14px 40px rgba(0, 0, 0, 0.12);
+}
+
+:root.theme-dark {
+  --bg: #1e1e1e;
+  --fg: #e8e8ea;
+  --border: rgba(255, 255, 255, 0.16);
+  --muted-bg: rgba(10, 132, 255, 0.18);
+  --muted-fg: #4ea1ff;
+  --card: rgba(255, 255, 255, 0.06);
+  --card-strong: rgba(32, 32, 34, 0.86);
+  --control-bg: rgba(255, 255, 255, 0.08);
+  --control-border: rgba(255, 255, 255, 0.22);
+  --subtle: rgba(255, 255, 255, 0.62);
+  --tertiary: rgba(255, 255, 255, 0.4);
+  --danger: #ff6961;
+  --success: #30d158;
+  --shadow: 0 18px 52px rgba(0, 0, 0, 0.28);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

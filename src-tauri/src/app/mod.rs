@@ -65,9 +65,27 @@ pub mod commands {
         }
     }
 
+    fn parse_language(s: &str) -> Option<LanguagePref> {
+        match s {
+            "zh-CN" => Some(LanguagePref::ZhCn),
+            "en" => Some(LanguagePref::En),
+            _ => None,
+        }
+    }
+
+    fn parse_theme(s: &str) -> Option<ThemePref> {
+        match s {
+            "dark" => Some(ThemePref::Dark),
+            "light" => Some(ThemePref::Light),
+            "system" => Some(ThemePref::System),
+            _ => None,
+        }
+    }
+
     fn language_str(l: LanguagePref) -> &'static str {
         match l {
-            LanguagePref::System => "system",
+            // Legacy config value: UI no longer exposes "system" for language.
+            LanguagePref::System => "zh-CN",
             LanguagePref::ZhCn => "zh-CN",
             LanguagePref::En => "en",
         }
@@ -127,6 +145,26 @@ pub mod commands {
             .map_err(|e| format!("open history db: {e}"))?;
         crate::storage::retention::run_retention(&conn, limit, now_ms())
             .map_err(|e| e.to_string())?;
+        settings_get()
+    }
+
+    #[tauri::command]
+    pub fn settings_set_language(language: String) -> Result<SettingsSnapshot, String> {
+        let language = parse_language(&language)
+            .ok_or_else(|| format!("invalid language `{language}`; expected zh-CN|en"))?;
+        let mut doc = ConfigDocument::load().map_err(|e| e.to_string())?;
+        doc.config.general.language = language;
+        doc.save().map_err(|e| e.to_string())?;
+        settings_get()
+    }
+
+    #[tauri::command]
+    pub fn settings_set_theme(theme: String) -> Result<SettingsSnapshot, String> {
+        let theme = parse_theme(&theme)
+            .ok_or_else(|| format!("invalid theme `{theme}`; expected dark|light|system"))?;
+        let mut doc = ConfigDocument::load().map_err(|e| e.to_string())?;
+        doc.config.general.theme = theme;
+        doc.save().map_err(|e| e.to_string())?;
         settings_get()
     }
 

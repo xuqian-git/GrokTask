@@ -6,6 +6,8 @@
 import { isTauriRuntime } from "./ipc";
 
 export type TrayMode = "off" | "active" | "always";
+export type LanguagePref = "zh-CN" | "en";
+export type ThemePref = "dark" | "light" | "system";
 
 export type IntegrationStatus =
   "not_installed" | "installed" | "outdated" | "invalid_config" | "unavailable";
@@ -17,8 +19,8 @@ export type AgentId = "codex" | "claude";
 
 export interface SettingsSnapshot {
   trayMode: TrayMode;
-  language: string;
-  theme: string;
+  language: LanguagePref;
+  theme: ThemePref;
   historyLimit: number;
   popoverWidth: number;
   popoverHeight: number;
@@ -151,6 +153,24 @@ export async function setTrayMode(mode: TrayMode): Promise<SettingsSnapshot> {
     return { ...mockSettings };
   }
   return invokeTauri<SettingsSnapshot>("settings_set_tray_mode", { mode });
+}
+
+export async function setLanguage(
+  language: LanguagePref,
+): Promise<SettingsSnapshot> {
+  if (!isTauriRuntime()) {
+    mockSettings.language = language;
+    return { ...mockSettings };
+  }
+  return invokeTauri<SettingsSnapshot>("settings_set_language", { language });
+}
+
+export async function setTheme(theme: ThemePref): Promise<SettingsSnapshot> {
+  if (!isTauriRuntime()) {
+    mockSettings.theme = theme;
+    return { ...mockSettings };
+  }
+  return invokeTauri<SettingsSnapshot>("settings_set_theme", { theme });
 }
 
 export async function setHistoryLimit(
@@ -409,6 +429,7 @@ export function resetSettingsMocksForTests(): void {
   mockSettings.trayMode = "active";
   mockSettings.historyLimit = 200;
   mockSettings.language = "zh-CN";
+  mockSettings.theme = "system";
   mockWorkspaceCwd = "/mock/workspace";
   mockAgents = [defaultAgent("codex"), defaultAgent("claude")];
 }

@@ -7,6 +7,8 @@ fn main() {
             "settings_get",
             "settings_set_tray_mode",
             "settings_set_history_limit",
+            "settings_set_language",
+            "settings_set_theme",
             "agents_status",
             "agents_install",
             "agents_remove",
