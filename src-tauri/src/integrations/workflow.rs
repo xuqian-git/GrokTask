@@ -33,16 +33,21 @@ pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
 
 当用户要求实现、重构、排查、修复或 review 代码时，你可以主动使用 `groktask` MCP 工具把独立工作交给 Grok Build。
 
+### 角色分工
+
+- **你（Codex / Claude Code）**：负责理解需求、规划、架构决策，并在需要时生成/更新 plan、spec 或 checklist。不要把规划职责交给 Grok。
+- **Grok**：按你给出的 plan/文档/spec 与验收标准执行实现、调试、重构或审查；不替代你的规划与最终判断。
+
 ### 默认循环
 
-1. 先理解用户需求和当前仓库状态。
-2. 对非平凡代码任务，调用 GrokTask：
+1. 先理解用户需求与当前仓库状态。对非平凡任务，先产出或更新清晰的 plan/spec/checklist。
+2. 带着该文档/计划上下文与具体验收标准调用 GrokTask：
    - 需要 Grok 修改代码时使用 `run` 或 `start`，`mode` 设为 `write`；
    - 只需要第二意见、审查或诊断时使用 `mode` 设为 `read`。
-3. Grok 完成后，你必须 review Grok 的改动，不要盲目信任。
-4. 如果 review 发现问题，再调用 GrokTask 让 Grok 修复；然后继续 review。
-5. 重复“Grok 修改 → 你 review → Grok 修复”，直到没有阻塞问题，或必须让用户做产品/权限决策。
-6. 你负责最终验证、总结和交付；GrokTask/Grok 是协作执行者，不替代你的判断。
+3. Grok 返回代码改动/结果后，你必须 review 并验证，不要盲目信任。
+4. 若 review 发现问题，再调用 GrokTask 让 Grok 按审查结论修复；然后继续 review。
+5. 重复「Grok 执行 → 你 review/验证 → Grok 修复」，直到没有阻塞问题，或必须让用户做产品/权限决策。
+6. 你负责最终验证、总结和交付。
 
 ### 约束
 

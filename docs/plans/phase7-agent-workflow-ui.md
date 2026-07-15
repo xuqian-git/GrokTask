@@ -10,7 +10,7 @@ The product target is closer to AskHuman:
 
 - the desktop app lets the user enable/disable GrokTask for Codex and Claude Code;
 - enabling does more than install MCP: it injects clear managed instructions so the host agent proactively calls GrokTask during coding;
-- Codex/Claude should use GrokTask for implementation assistance, review, fix, and re-review loops until the user's requirement is actually done;
+- Codex/Claude own requirement understanding, planning, and architecture; they produce/update plan/spec when needed, then use GrokTask for implementation/debug/refactor execution, review, fix, and re-review until the requirement is done;
 - the app UI is Chinese by default and feels like a native local tool;
 - the menu-bar popover shows live ACP activity;
 - the full window can browse all ACP/task records, not only a single task detail.
@@ -112,27 +112,32 @@ Workflow status/enable/disable are global-user scoped via `IntegrationRoots` (te
 
 ## Default managed instruction content
 
-The injected block should be concise, forceful, and operational. It must teach the host agent to use the GrokTask MCP server as part of its normal coding workflow.
+The injected block should be concise, forceful, and operational. It must teach the host agent (Codex / Claude Code) to own planning and to use GrokTask as an execution collaborator—not a planning replacement.
 
 Use Chinese user-facing language where appropriate, but the instruction content may be bilingual if that helps the agent.
 
-Suggested content:
+Suggested content (must stay in sync with `DEFAULT_WORKFLOW_BODY` in `src-tauri/src/integrations/workflow.rs`):
 
 ```markdown
 ## GrokTask 协作协议
 
 当用户要求实现、重构、排查、修复或 review 代码时，你可以主动使用 `groktask` MCP 工具把独立工作交给 Grok Build。
 
+### 角色分工
+
+- **你（Codex / Claude Code）**：负责理解需求、规划、架构决策，并在需要时生成/更新 plan、spec 或 checklist。不要把规划职责交给 Grok。
+- **Grok**：按你给出的 plan/文档/spec 与验收标准执行实现、调试、重构或审查；不替代你的规划与最终判断。
+
 ### 默认循环
 
-1. 先理解用户需求和当前仓库状态。
-2. 对非平凡代码任务，调用 GrokTask：
+1. 先理解用户需求与当前仓库状态。对非平凡任务，先产出或更新清晰的 plan/spec/checklist。
+2. 带着该文档/计划上下文与具体验收标准调用 GrokTask：
    - 需要 Grok 修改代码时使用 `run` 或 `start`，`mode` 设为 `write`；
    - 只需要第二意见、审查或诊断时使用 `mode` 设为 `read`。
-3. Grok 完成后，你必须 review Grok 的改动，不要盲目信任。
-4. 如果 review 发现问题，再调用 GrokTask 让 Grok 修复；然后继续 review。
-5. 重复“Grok 修改 → 你 review → Grok 修复”，直到没有阻塞问题，或必须让用户做产品/权限决策。
-6. 你负责最终验证、总结和交付；GrokTask/Grok 是协作执行者，不替代你的判断。
+3. Grok 返回代码改动/结果后，你必须 review 并验证，不要盲目信任。
+4. 若 review 发现问题，再调用 GrokTask 让 Grok 按审查结论修复；然后继续 review。
+5. 重复「Grok 执行 → 你 review/验证 → Grok 修复」，直到没有阻塞问题，或必须让用户做产品/权限决策。
+6. 你负责最终验证、总结和交付。
 
 ### 约束
 
@@ -143,7 +148,7 @@ Suggested content:
 - 如果连续两轮修复仍无法收敛，停止循环并向用户说明阻塞点。
 ```
 
-The exact text can be improved by Grok, but it must preserve this behavior.
+The exact text can be refined, but it must preserve this host-plans / Grok-executes behavior and the safety constraints.
 
 ## UI requirements
 
@@ -294,7 +299,7 @@ This phase is acceptable when:
 
 - a user can open GrokTask, see Chinese UI, and clearly enable/disable Codex/Claude MCP plus global workflow instructions;
 - the global target `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` receives a safe GrokTask managed block;
-- a host agent reading that block would know to call GrokTask for implementation/review/fix loops;
+- a host agent reading that block would know it must plan first for non-trivial work, pass plan/spec and acceptance criteria to Grok, then own review/verify/fix loops;
 - the app has an ACP records/history view that is useful without raw JSON noise;
 - macOS menu-bar popover opens and shows recent/live activity;
 - Settings tab navigation is single-click reliable;
