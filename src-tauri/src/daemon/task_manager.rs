@@ -223,6 +223,102 @@ impl TaskManager {
             .await
     }
 
+    pub fn continue_task(
+        self: &Arc<Self>,
+        task_id: &str,
+        prompt: String,
+        owner_kind: &str,
+        owner_connection_id: Option<String>,
+        owner_request_id: Option<String>,
+    ) -> Result<StartResult, TaskError> {
+        let prompt = prompt.trim().to_string();
+        if prompt.is_empty() {
+            return Err(TaskError::invalid("prompt is required"));
+        }
+        if prompt.len() > crate::dto::MAX_TASK_BYTES {
+            return Err(TaskError::invalid("prompt is too long"));
+        }
+
+        let conn = self.open().map_err(TaskError::internal)?;
+        let task = repository::get_task(&conn, task_id)
+            .map_err(TaskError::storage)?
+            .ok_or_else(|| TaskError::not_found("task not found"))?;
+        let status =
+            TaskContainerStatus::parse(&task.status).unwrap_or(TaskContainerStatus::Failed);
+        if status.is_active() {
+            return Err(TaskError::conflict(
+                "task_active",
+                "task already has an active turn",
+            ));
+        }
+        let mode = TaskMode::parse(&task.mode).unwrap_or(TaskMode::Read);
+        let (_requested_model, _actual_model, _stop, _ecode) =
+            repository::get_task_models(&conn, task_id).unwrap_or((None, None, None, None));
+        let turns = repository::list_turns_for_task(&conn, task_id).map_err(TaskError::storage)?;
+        let ordinal = turns.iter().map(|t| t.ordinal).max().unwrap_or(0) + 1;
+        let now = now_ms();
+        let turn_id = repository::new_id();
+        let turn = TurnRow {
+            id: turn_id.clone(),
+            task_id: task_id.into(),
+            ordinal,
+            prompt_markdown: prompt.clone(),
+            status: "queued".into(),
+            owner_kind: owner_kind.into(),
+            owner_connection_id,
+            owner_request_id,
+            mode: mode.as_str().into(),
+            termination_cause: None,
+            answer_markdown: String::new(),
+            partial: false,
+            result_json: None,
+            created_at: now,
+            started_at: None,
+            finished_at: None,
+        };
+        repository::insert_turn(&conn, &turn).map_err(TaskError::storage)?;
+        conn.execute(
+            "UPDATE tasks SET status = 'queued', last_turn_id = ?1, finished_at = NULL,
+                stop_reason = NULL, error_code = NULL, error_message = NULL, updated_at = ?2
+             WHERE id = ?3",
+            rusqlite::params![turn_id, now, task_id],
+        )
+        .map_err(TaskError::storage)?;
+
+        let next_sequence = task.last_sequence + 1;
+        self.seed_user_message_at(&conn, task_id, &turn_id, &prompt, next_sequence)
+            .map_err(TaskError::storage)?;
+
+        let rt = Arc::new(TurnRuntime::default());
+        self.turns.lock().insert(turn_id.clone(), rt.clone());
+
+        let input = TaskInput {
+            task: prompt,
+            cwd: task.cwd,
+            mode,
+            model: None,
+            effort: None,
+            title: Some(task.title),
+        };
+        let mgr = Arc::clone(self);
+        let task_id_c = task_id.to_string();
+        let turn_id_c = turn_id.clone();
+        tokio::spawn(async move {
+            mgr.run_turn(task_id_c, turn_id_c, input, rt).await;
+        });
+
+        Ok(StartResult {
+            submission_id: repository::new_id(),
+            task_id: task_id.into(),
+            turn_id,
+            turn_ordinal: ordinal as u32,
+            status: "queued".into(),
+            mode,
+            created_at: ms_to_rfc3339(now),
+            task_deleted: None,
+        })
+    }
+
     pub async fn wait(
         &self,
         task_id: &str,
@@ -658,6 +754,17 @@ impl TaskManager {
         turn_id: &str,
         prompt: &str,
     ) -> Result<(), repository::RepoError> {
+        self.seed_user_message_at(conn, task_id, turn_id, prompt, 1)
+    }
+
+    fn seed_user_message_at(
+        &self,
+        conn: &rusqlite::Connection,
+        task_id: &str,
+        turn_id: &str,
+        prompt: &str,
+        sequence: i64,
+    ) -> Result<(), repository::RepoError> {
         let item_id = format!("seg:{turn_id}:0:user");
         let payload = json!({
             "itemId": item_id,
@@ -673,22 +780,22 @@ impl TaskManager {
             item_id: item_id.clone(),
             turn_id: Some(turn_id.into()),
             kind: "user_message".into(),
-            first_sequence: 1,
-            last_sequence: 1,
+            first_sequence: sequence,
+            last_sequence: sequence,
             payload_json: payload.to_string(),
             created_at: now,
             updated_at: now,
         };
         let m = MutationRow {
             task_id: task_id.into(),
-            sequence: 1,
+            sequence,
             generation: 1,
             operation: "add".into(),
             item_id: Some(item_id),
             payload_json: payload.to_string(),
             created_at: now,
         };
-        repository::commit_timeline_mutations(conn, task_id, &[item], &[m], 1)
+        repository::commit_timeline_mutations(conn, task_id, &[item], &[m], sequence)
     }
 
     async fn run_turn(

@@ -8,7 +8,7 @@ import {
   mockTaskDetail,
   mockTaskList,
 } from "./mockData";
-import type { TaskDetail, TaskListItem } from "./types";
+import type { StartResult, TaskDetail, TaskListItem } from "./types";
 
 export type SurfaceId = "popover" | "task" | "settings";
 
@@ -73,4 +73,23 @@ export async function fetchTaskList(limit?: number): Promise<TaskListItem[]> {
   return invokeTauri<TaskListItem[]>("tasks_list", {
     limit: limit ?? null,
   });
+}
+
+/** Continue an existing task with a new user prompt. */
+export async function sendTaskMessage(
+  taskId: string,
+  prompt: string,
+): Promise<StartResult> {
+  if (!isTauriRuntime()) {
+    return {
+      submissionId: "mock-submission",
+      taskId,
+      turnId: "mock-turn-next",
+      turnOrdinal: 2,
+      status: "queued",
+      mode: "read",
+      createdAt: new Date().toISOString(),
+    };
+  }
+  return invokeTauri<StartResult>("tasks_send", { taskId, prompt });
 }

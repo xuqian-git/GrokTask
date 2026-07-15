@@ -19,6 +19,7 @@ fn main() {
             "daemon_restart",
             "tasks_list",
             "tasks_show",
+            "tasks_send",
             "history_clear",
         ]),
     ))

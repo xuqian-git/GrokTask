@@ -4,7 +4,7 @@ import ComposerPlaceholder from "@/components/composer/ComposerPlaceholder.vue";
 import HistorySidebar from "@/components/history/HistorySidebar.vue";
 import ActivePlanBar from "@/components/plan/ActivePlanBar.vue";
 import TimelineView from "@/components/timeline/TimelineView.vue";
-import { fetchTaskDetail, fetchTaskList } from "@/lib/ipc";
+import { fetchTaskDetail, fetchTaskList, sendTaskMessage } from "@/lib/ipc";
 import { getSharedExpansion, replaceSharedExpansionKey } from "@/lib/uiState";
 import type { ExpansionMap } from "@/lib/expansion";
 import type { TaskDetail, TaskListItem } from "@/lib/types";
@@ -21,6 +21,7 @@ const detail = ref<TaskDetail | null>(null);
 const expansion = ref<ExpansionMap>({});
 const loading = ref(true);
 const refreshing = ref(false);
+const sending = ref(false);
 const error = ref<string | null>(null);
 const sidebarCollapsed = ref(false);
 let refreshTimer: number | null = null;
@@ -86,6 +87,21 @@ function onExpansion(map: ExpansionMap) {
   expansion.value = map;
   if (selectedTaskId.value) {
     replaceSharedExpansionKey(selectedTaskId.value, map);
+  }
+}
+
+async function onSend(text: string) {
+  if (!selectedTaskId.value || sending.value) return;
+  sending.value = true;
+  error.value = null;
+  try {
+    await sendTaskMessage(selectedTaskId.value, text);
+    await refreshList();
+    await refreshDetail(selectedTaskId.value);
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    sending.value = false;
   }
 }
 
@@ -218,7 +234,11 @@ onUnmounted(() => {
           @update:expansion="onExpansion"
         />
         <ActivePlanBar v-if="detail.activePlan" :plan="detail.activePlan" />
-        <ComposerPlaceholder :status="detail.task.status" />
+        <ComposerPlaceholder
+          :status="detail.task.status"
+          :disabled="sending"
+          @send="onSend"
+        />
       </template>
     </div>
   </section>

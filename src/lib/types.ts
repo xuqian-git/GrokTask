@@ -42,6 +42,17 @@ export interface TaskStatus {
   finishedAt?: string;
 }
 
+export interface StartResult {
+  submissionId: string;
+  taskId: string;
+  turnId: string;
+  turnOrdinal: number;
+  status: string;
+  mode: TaskMode;
+  createdAt: string;
+  taskDeleted?: boolean;
+}
+
 export interface PlanEntry {
   content: string;
   status?: string;

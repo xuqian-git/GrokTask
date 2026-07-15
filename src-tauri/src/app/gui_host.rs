@@ -166,6 +166,7 @@ fn run_impl(launch: GuiHostLaunch) -> ! {
             commands::daemon_restart,
             commands::tasks_list,
             commands::tasks_show,
+            commands::tasks_send,
             commands::history_clear,
         ])
         .on_window_event(|window, event| {

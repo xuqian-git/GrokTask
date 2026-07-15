@@ -290,6 +290,7 @@ async fn dispatch_request(req: &Request, state: &DaemonState, role: ClientRole) 
         }
         "task.start" => handle_task_start(req, state, role, false).await,
         "task.run" => handle_task_start(req, state, role, true).await,
+        "task.continue" => handle_task_continue(req, state, role).await,
         "task.status" => {
             let task_id = match req.params.get("taskId").and_then(|v| v.as_str()) {
                 Some(id) => match validate_uuid_like(id, "taskId") {
@@ -460,6 +461,45 @@ async fn dispatch_request(req: &Request, state: &DaemonState, role: ClientRole) 
             format!("unknown method `{other}`"),
             false,
         ),
+    }
+}
+
+async fn handle_task_continue(req: &Request, state: &DaemonState, role: ClientRole) -> Response {
+    let task_id = match req.params.get("taskId").and_then(|v| v.as_str()) {
+        Some(id) => match validate_uuid_like(id, "taskId") {
+            Ok(id) => id,
+            Err(e) => return Response::err(&req.request_id, &e.code, e.message, false),
+        },
+        None => {
+            return Response::err(
+                &req.request_id,
+                "invalid_params",
+                "taskId is required",
+                false,
+            );
+        }
+    };
+    let prompt = match req.params.get("prompt").and_then(|v| v.as_str()) {
+        Some(t) => t.to_string(),
+        None => {
+            return Response::err(
+                &req.request_id,
+                "invalid_params",
+                "prompt is required",
+                false,
+            );
+        }
+    };
+    let connection_id = Some(format!("{role:?}"));
+    match state.tasks.continue_task(
+        &task_id,
+        prompt,
+        "client",
+        connection_id,
+        Some(req.request_id.clone()),
+    ) {
+        Ok(r) => Response::ok(&req.request_id, serde_json::to_value(r).unwrap_or_default()),
+        Err(e) => task_err_response(&req.request_id, e),
     }
 }
 

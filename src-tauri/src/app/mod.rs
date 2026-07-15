@@ -9,7 +9,7 @@ pub mod windows;
 pub mod commands {
     use crate::config::{ConfigDocument, LanguagePref, ThemePref, TrayMode};
     use crate::doctor::{self, DoctorReport, GrokCliStatus};
-    use crate::dto::{TaskDetail, TaskListItem};
+    use crate::dto::{StartResult, TaskDetail, TaskListItem};
     use crate::integrations::{self, AgentId, AgentIntegrationStatus, AgentStatusReport};
     use crate::ipc::client::{self, unwrap_result};
     use crate::ipc::protocol::ClientRole;
@@ -336,6 +336,19 @@ pub mod commands {
         .map_err(|e| format!("{e:#}"))?;
         let v = unwrap_result(resp).map_err(|e| format!("{e:#}"))?;
         decode_task_detail(v)
+    }
+
+    /// Continue an existing task with a new user prompt.
+    #[tauri::command]
+    pub fn tasks_send(task_id: String, prompt: String) -> Result<StartResult, String> {
+        let resp = client::request_blocking(
+            ClientRole::GuiHost,
+            "task.continue",
+            json!({ "taskId": task_id, "prompt": prompt }),
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        let v = unwrap_result(resp).map_err(|e| format!("{e:#}"))?;
+        serde_json::from_value(v).map_err(|e| format!("task.continue decode: {e}"))
     }
 
     /// Clear eligible task history. Active / protected tasks are kept.

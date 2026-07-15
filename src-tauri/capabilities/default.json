@@ -27,6 +27,7 @@
     "allow-daemon-restart",
     "allow-tasks-list",
     "allow-tasks-show",
+    "allow-tasks-send",
     "allow-history-clear"
   ]
 }

@@ -111,6 +111,54 @@ describe("conversation shell layouts", () => {
     w.unmount();
   });
 
+  it("TaskView composer sends a follow-up turn for the selected task", async () => {
+    resetUiStateForTests();
+    const list: TaskListItem[] = [
+      {
+        taskId: "task-real-1",
+        title: "Real task one",
+        cwd: "/tmp/a",
+        mode: "read",
+        status: "idle",
+        actualModel: "grok-4",
+        createdAt: "2026-07-15T00:00:00.000Z",
+        updatedAt: "2026-07-15T00:01:00.000Z",
+      },
+    ];
+    vi.spyOn(ipc, "fetchTaskList").mockResolvedValue(list);
+    vi.spyOn(ipc, "fetchTaskDetail").mockImplementation(async (taskId?: string) => {
+      const d = mockTaskDetail();
+      d.task.taskId = taskId ?? "task-real-1";
+      d.title = "Real task one";
+      d.task.status = "idle";
+      return d;
+    });
+    const sendSpy = vi.spyOn(ipc, "sendTaskMessage").mockResolvedValue({
+      submissionId: "sub-1",
+      taskId: "task-real-1",
+      turnId: "turn-2",
+      turnOrdinal: 2,
+      status: "queued",
+      mode: "read",
+      createdAt: "2026-07-15T00:02:00.000Z",
+    });
+
+    const w = mount(TaskView, {
+      attachTo: document.body,
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    await w.vm.$nextTick();
+
+    await w.find('[data-testid="composer-input"]').setValue("继续解释一下");
+    await w.find('[data-testid="composer-send"]').trigger("click");
+    await new Promise((r) => setTimeout(r, 30));
+    await w.vm.$nextTick();
+
+    expect(sendSpy).toHaveBeenCalledWith("task-real-1", "继续解释一下");
+
+    w.unmount();
+  });
+
   it("PopoverView uses compact timeline + plan + composer without sidebar", async () => {
     resetUiStateForTests();
     const w = mount(PopoverView, {
