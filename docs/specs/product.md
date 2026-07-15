@@ -4,7 +4,7 @@
 
 ## 1. 产品定义
 
-GrokTask 是一个独立、跨平台、单二进制的本地工具。Codex 或 Claude Code 通过 MCP 直接调用它，把编码、诊断、审查或重构任务交给 Grok Build；用户通过原生桌面窗口和系统托盘查看真实的执行过程、继续对话或取消任务。
+GrokTask 是一个独立、跨平台、单二进制的本地工具。Codex 或 Claude Code 通过 MCP 直接调用它，把已经规划好的编码实现、文件修改、测试补齐或修复落地任务交给 Grok Build；用户通过原生桌面窗口和系统托盘查看真实的执行过程、继续对话或取消任务。
 
 GrokTask 不是 Codex 插件，也不依赖浏览器、localhost 页面或 Node.js 插件运行时。
 
@@ -72,7 +72,7 @@ GrokTask 不是 Codex 插件，也不依赖浏览器、localhost 页面或 Node.
 
 - 只允许读取、搜索和 Grok 内建白名单中的只读 Git 命令。
 - 使用 Grok `read-only` sandbox、`dontAsk` permission mode、禁用 WebFetch、编辑和 subagent；不添加可匹配 `git push/reset/clean` 的宽泛 Bash allow rule。
-- 适合代码审查、诊断、方案分析和第二意见。
+- 适合读取代码、收集编码上下文，或在调用方已经完成分析后执行只读准备；代码审查、诊断、方案分析和第二意见由 Codex/Claude Code 自己完成。
 - 如果 Grok 尝试写入，任务应失败并在时间线显示清晰错误，不能静默切换为 write。
 
 ### 5.2 `write`

@@ -155,13 +155,13 @@ Reducer 是 ACP 原始流到 UI/持久化语义流的唯一转换层。
 - `usage_update`：更新任务 header/metadata，不进对话流。
 - `current_mode_update`、`config_option_update`、`session_info_update`：更新 session metadata；只有会影响用户判断的变化才生成简短 context notice。
 - `available_commands_update`：更新能力缓存，不进对话流。
-- permission request：先 flush 当前 segment，在到达位置创建稳定 `permission:<turnId>:<requestId>` 语义 item，并关联到等待中的 tool card。JSON-RPC requestId 只在当前 transport 内唯一，但 turnId 在 transport crash 后不会复用，因此组合不会与恢复后的新 turn 碰撞。item 只显示人类化动作与结果，不显示 request/options JSON；生命周期是 `requesting -> allowed_once | rejected | cancelled`，tool card 同步显示相同 substatus。它是必须回应的 JSON-RPC request，不能只记录 UI 状态：
-  - read mode：立即选择最严格可用的 reject option（优先 reject_once，其次 reject_always）；若没有 reject option则返回 cancelled。随后任务以 `read_mode_violation` 失败。
-  - write mode：用户已显式授权 write，立即选择 `allow_once`；绝不选择 allow_always。没有 allow_once 时返回 cancelled，并以 `permission_unavailable` 失败。
+- permission request：先 flush 当前 segment，在到达位置创建稳定 `permission:<turnId>:<requestId>` 语义 item，并关联到等待中的 tool card。JSON-RPC requestId 只在当前 transport 内唯一，但 turnId 在 transport crash 后不会复用，因此组合不会与恢复后的新 turn 碰撞。item 只显示人类化动作与结果，不显示 request/options JSON；生命周期是 `requesting -> approved | rejected | cancelled`，tool card 同步显示相同 substatus。它是必须回应的 JSON-RPC request，不能只记录 UI 状态：
+  - headless run/start：read 与 write 都立即选择 `allow_once`（绝不选择 allow_always），避免任务停在不可操作的权限请求上。安全边界由启动参数中的 read-only/workspace sandbox、deny 规则与 cwd 约束承担。
+  - 没有 allow_once/allow_always 时，选择最严格可用的 reject option（优先 reject_once，其次 reject_always）；没有 reject option 则返回 cancelled，并以 `permission_unavailable` 失败。
   - task 已 cancelling/cancelled：立即返回 cancelled。
   - handler 内部响应期限为 2 秒；异常仍必须发送 cancelled response，再结束任务。不得弹出脱离上下文的全局权限框。
 
-read 拒绝或 write 无可用 allow_once 时，必须先持久化对应 `terminationCause`、回应 permission request、把 permission item 更新为 rejected/cancelled，再进入统一 `session/cancel` + soft wait + supervisor TERM/KILL 流程。确认原 prompt 不再运行后才把 turn 标 failed。Agent 在取消 drain 内发出的事件仍可落诊断，但不得把已失败 turn 重新变为 running。
+无可用 allow_once/allow_always 时，必须先持久化对应 `terminationCause`、回应 permission request、把 permission item 更新为 rejected/cancelled，再进入统一 `session/cancel` + soft wait + supervisor TERM/KILL 流程。确认原 prompt 不再运行后才把 turn 标 failed。Agent 在取消 drain 内发出的事件仍可落诊断，但不得把已失败 turn 重新变为 running。
 
 ### 4.7 xAI 扩展通知
 

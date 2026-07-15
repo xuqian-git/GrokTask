@@ -1,6 +1,6 @@
 # GrokTask
 
-Cross-platform local task runner that lets **Codex** or **Claude Code** hand coding and review work to **Grok Build** via MCP, while you watch the real Thought → Tool → Reply stream in a native desktop UI (menu bar / tray popover and full window).
+Cross-platform local task runner that lets **Codex** or **Claude Code** hand planned coding implementation work to **Grok Build** via MCP, while you watch the real Thought → Tool → Reply stream in a native desktop UI (menu bar / tray popover and full window).
 
 GrokTask is a **standalone** single binary (`GrokTask`), not a Codex plugin. It does not depend on a browser, localhost dashboard, or Node.js plugin runtime.
 
