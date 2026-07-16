@@ -31,31 +31,32 @@ const ASKHUMAN_END: &str = "<!-- AskHuman:end -->";
 /// Default instruction body injected inside the managed block.
 pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
 
-默认最大委派：凡是需要读写仓库/工作区、写代码、调试、诊断 CI、做 code review、补测试、写文档、做与工作区相关的研究，或做性能/稳定性/安全分析时，优先把工作交给 `groktask` MCP 上的 Grok Build。不要因为“自己也能做”就跳过 GrokTask。
+职责边界（严格）：**你（Codex / Claude Code）负责分析、规划、诊断、审查与最终判断；Grok 是实现执行器。** 通过 `groktask` MCP 把**已规划好的实现工作**交给 Grok Build 落地。
 
-### 你（Codex / Claude Code）只做这些
+### 你（Codex / Claude Code）负责
 
-1. 识别意图、范围与敏感度（是否涉及 secrets/私有数据、是否需要用户授权的外部副作用）。
-2. 判断是否需要显式 plan：复杂多步、有重大取舍、或用户明确要求方案时，由你先写短 plan/验收标准。
-3. 若**不需要** plan：不要自己做诊断、根因分析、review 推理或实现推演——立即委派 Grok。
-4. 保留并执行：需要用户做的产品/权限决策；纯对话问答/总结/翻译（且不依赖工作区实操）；不能安全分享的 secrets/token/隐私；需要用户权威的外部副作用（提交、推送、开 PR、发消息、改共享基础设施等）。
-5. Grok 返回后做**轻量**终审与验证（结果是否达标、是否误伤范围），再向用户交付。不要重复做 Grok 已完成的深度排查或整仓实现。
+1. 需求理解与澄清；产品/权限决策；架构与取舍；规划 / 规格 / 检查清单 / 验收标准。
+2. Bug 与 CI 根因分析；性能 / 稳定性 / 安全分析；code review；最终验证与判断。
+3. 委派实现前必须先完成分析：给出明确的 plan/spec/诊断结论与验收标准。简单改动也无需正式长 plan，但仍须分析后给出简洁实现指令与验收标准——**禁止“不思考、立即委派”**。
+4. 纯解释 / 总结 / 翻译，以及分析 / 审查 / 诊断 / 规划类任务由你完成，不要委派给 Grok。
+5. Grok 返回后做终审与验证（是否达标、是否误伤范围），再向用户交付。
 
 ### Grok 负责（通过 groktask）
 
-编码与改文件、调试与根因定位、CI 诊断与修复、code review、测试、文档、与工作区绑定的调研/搜索、性能/稳定性/安全分析，以及按你给出的 plan/验收标准落地修复。同一主机对话 + 同一 workspace 内复用同一 Grok ACP 会话。
+在收到你给出的 plan/spec/诊断与验收标准后：写 / 改代码、补测试、跑相关检查，并修复因其实现或主机审查反馈导致的编译 / 测试问题。可检查足够周围代码以保证安全实现，可自纠实现级失败。**不得**替代你的规划、独立诊断、架构、审查或最终判断。
 
-### 会话与工具
+### 会话策略（由主机决定）
 
-- 在同一主机对话与同一 workspace 中保留 `taskId`。
-- **首轮 / 新主机对话 / 新 workspace / 用户明确要求新上下文**：用 `run` 或 `start` 创建任务；`mode` 必须按意图显式选 `read` 或 `write`，之后不要静默把 read 改成 write。
-- **同一 task 的后续请求与 follow-up**：调用 `continue`（传入保留的 `taskId` + 下一轮 prompt），不要再 `run`/`start` 新开 session。
-- 需要改代码、补测试、落地修复：`mode: write`。只需读代码/分析/审查：`mode: read`。
+- **你**决定复用现有 Grok task/session，还是 `run`/`start` 新开。Grok 不决定此生命周期。
+- 请求是真正的实现 follow-up，且现有上下文相关且健康时：用 `continue`（保留的 `taskId` + 下一轮 prompt）。
+- 工作不相关、上下文陈旧 / 污染、先前 ACP 会话不健康 / 空 / 不收敛、mode 或 workspace 边界需要，或干净实现上下文更安全时：你可选用 `run`/`start` 新开。用户明确要求重置足够，但不强制。
+- `mode` 必须按意图显式选 `read` 或 `write`，之后不要静默把 read 改成 write。
+- 需要改代码、补测试、落地修复：`mode: write`。只需只读检查辅助实现：`mode: read`。
 - 长任务可用 `start`，再用 `status`/`wait`/`cancel`；阻塞短路径用 `run` 或 `continue`。
 
 ### 明确豁免（可不调用 GrokTask）
 
-- 纯解释、问答、总结、翻译，且不需要读写工作区；
+- 纯解释、问答、总结、翻译；
 - 1–2 行显然机械改动（改文案、typo）；
 - 任务涉及 secrets/token/隐私，不能安全发送给 Grok；
 - GrokTask 不可用、返回失败、连续两轮仍不收敛；
@@ -63,18 +64,17 @@ pub const DEFAULT_WORKFLOW_BODY: &str = r#"## GrokTask 协作协议
 
 ### 默认循环
 
-1. 识别意图/范围/敏感度；需要时写短 plan 与验收标准，否则直接委派。
-2. 首轮 `run`/`start`；后续同一对话+workspace 用 `continue`。
-3. 轻量审查 Grok 结果；有问题再 `continue` 让 Grok 按审查意见修。
+1. 分析意图 / 范围 / 敏感度；写出 plan/spec/诊断与验收标准（简单改动也给简洁指令 + 验收标准）。
+2. 你决定 `run`/`start`（新任务 / 干净上下文）或 `continue`（相关健康 follow-up）。
+3. 审查 Grok 结果；有问题再 `continue` 让其按审查意见修，或新开 session。
 4. 重复直到达标，或需要用户决策时停下来问用户。
 5. 你负责最终验证摘要与交付说明。
 
 ### 约束
 
-- 不要把“我能自己做”当成跳过理由；默认委派。
 - 不要让 Grok 自动提交、推送、创建 PR 或扩大工作目录，除非用户明确要求且由你（或用户）执行外部副作用。
 - 不要把 secrets、token、个人敏感信息发送给 GrokTask。
-- 失败/取消/部分结果如实报告；连续两轮不收敛则向用户说明阻塞点。
+- 失败 / 取消 / 部分结果如实报告；连续两轮不收敛则向用户说明阻塞点。
 "#;
 
 /// Instruction file basename for each agent.
@@ -403,19 +403,60 @@ mod tests {
         assert!(text.contains(BLOCK_BEGIN));
         assert!(text.contains(BLOCK_END));
         assert!(text.contains("GrokTask 协作协议"));
-        assert!(text.contains("默认最大委派"));
+        assert!(text.contains("职责边界"));
+        assert!(text.contains("实现执行器"));
+        assert!(text.contains("验收标准"));
         assert!(text.contains("continue"));
         assert!(text.contains("taskId"));
         assert!(text.contains("明确豁免"));
-        assert!(text.contains("轻量"));
+        assert!(text.contains("会话策略（由主机决定）"));
         assert!(text.contains("不要静默把 read 改成 write"));
-        // Old host-heavy planning copy must not remain
-        assert!(!text.contains("review、bug 排查、性能分析由你负责"));
-        assert!(!text.contains("不要把 review、bug 排查或性能分析委派给 Grok"));
+        // Host owns analysis / planning / review / final judgment
+        assert!(text.contains("根因分析") || text.contains("code review"));
+        assert!(text.contains("最终验证"));
+        assert!(text.contains("禁止“不思考、立即委派”") || text.contains("禁止"));
+        // Grok is implementation executor only
+        assert!(text.contains("写 / 改代码") || text.contains("写/改代码"));
+        assert!(text.contains("不得") && text.contains("规划"));
+        // Session lifecycle is host-decided (reuse or fresh)
+        assert!(text.contains("你可选用") || text.contains("你决定"));
+        assert!(text.contains("干净实现上下文") || text.contains("不收敛"));
+        // Reject prior maximum-delegation / do-not-think / rigid-only-user-reset copy
+        assert!(!text.contains("默认最大委派"));
+        assert!(!text.contains("最大委派"));
+        assert!(!text.contains("不要自己做诊断、根因分析、review 推理或实现推演——立即委派"));
+        assert!(!text.contains("不要因为“自己也能做”就跳过"));
+        assert!(!text.contains("不要把“我能自己做”当成跳过理由"));
+        assert!(!text.contains("同一主机对话 + 同一 workspace 内复用同一 Grok ACP 会话"));
+        assert!(!text.contains("用户明确要求新上下文"));
+        assert!(!text.contains("不要再 `run`/`start` 新开 session"));
         // Idempotent
         let before = fs::read_to_string(&path).unwrap();
         enable(&roots, AgentId::Codex).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn default_workflow_body_encodes_host_executor_boundary() {
+        let body = DEFAULT_WORKFLOW_BODY;
+        // Positive: host analyzes/plans/reviews; Grok executes
+        assert!(body.contains("职责边界"));
+        assert!(body.contains("实现执行器"));
+        assert!(body.contains("验收标准"));
+        assert!(body.contains("code review") || body.contains("最终验证"));
+        assert!(body.contains("会话策略（由主机决定）"));
+        assert!(body.contains("continue"));
+        assert!(body.contains("run") && body.contains("start"));
+        // Negative: prior maximum-delegation / do-not-think / rigid session policy
+        assert!(!body.contains("默认最大委派"));
+        assert!(!body.contains("最大委派"));
+        assert!(!body.contains("立即委派 Grok"));
+        assert!(!body.contains("不要自己做诊断"));
+        assert!(!body.contains("默认委派"));
+        assert!(!body.contains("调试与根因定位、CI 诊断与修复、code review"));
+        assert!(!body.contains("性能/稳定性/安全分析，以及按你给出的 plan"));
+        assert!(!body.contains("用户明确要求新上下文"));
+        assert!(!body.contains("不要再 `run`/`start` 新开 session"));
     }
 
     #[test]

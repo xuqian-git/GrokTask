@@ -10,7 +10,7 @@ The product target is closer to AskHuman:
 
 - the desktop app lets the user enable/disable GrokTask for Codex and Claude Code;
 - enabling does more than install MCP: it injects clear managed instructions so the host agent proactively calls GrokTask during coding;
-- Codex/Claude own requirement understanding, planning, architecture, review, bug diagnosis, and performance analysis; after they produce/update a plan/spec/checklist or diagnosis, they use GrokTask for coding implementation, file changes, test additions, and fix implementation until the requirement is done;
+- Codex/Claude own requirement understanding and clarification, product/permission decisions, architecture and tradeoffs, planning/spec/checklists/acceptance criteria, bug and CI root-cause analysis, performance/stability/security analysis, code review, and final verification/judgment; after they produce/update a plan/spec/checklist or diagnosis, they use GrokTask as an **implementation executor** for coding, file changes, tests, and fix execution until the requirement is done;
 - the app UI is Chinese by default and feels like a native local tool;
 - the menu-bar popover shows live ACP activity;
 - the full window can browse all ACP/task records, not only a single task detail.
@@ -112,13 +112,17 @@ Workflow status/enable/disable are global-user scoped via `IntegrationRoots` (te
 
 ## Default managed instruction content
 
-The injected block should be concise, forceful, and operational. It must teach the host agent (Codex / Claude Code) to own planning and to use GrokTask as an execution collaborator—not a planning replacement.
+The injected block should be concise, forceful, and operational. It must teach the host agent (Codex / Claude Code) to **analyze, plan, diagnose, review, and judge**, and to use GrokTask only as an **implementation executor**—not a planning, diagnosis, or review replacement. Remove any “maximum delegation / do not think / delegate immediately” wording.
 
-Use Chinese user-facing language where appropriate, but the instruction content may be bilingual if that helps the agent.
+Use Chinese for the injected instruction body (authoritative in `DEFAULT_WORKFLOW_BODY`).
 
-Suggested content (must stay in sync with `DEFAULT_WORKFLOW_BODY` in `src-tauri/src/integrations/workflow.rs`):
+Required boundary (must stay in sync with `DEFAULT_WORKFLOW_BODY` in `src-tauri/src/integrations/workflow.rs`):
 
-Default **maximum delegation**: host identifies intent/scope/sensitivity, writes a short plan only when needed, otherwise delegates immediately. Grok owns workspace work (coding, debugging, CI, review, tests, docs, research, performance/stability/security). Host keeps user decisions, pure conversation, secrets, and external side effects requiring authority, plus lightweight final verification. Same host conversation + workspace retains `taskId` and uses MCP `continue` for later turns (`session/load` reuse); fresh `run`/`start` only for first turn / new conversation / new workspace / explicit reset. Never silently switch `read` → `write`.
+- **Host owns:** requirement understanding, product/permission decisions, architecture/tradeoffs, plan/spec/checklists/acceptance criteria, bug/CI root-cause, performance/stability/security analysis, code review, final verification. Even simple code changes need a concise implementation instruction + acceptance criteria after host analysis.
+- **Grok owns:** write/modify code, add tests, run relevant checks, fix compile/test issues from its implementation or host review feedback—after receiving an explicit plan/spec/diagnosis + acceptance criteria. May inspect surrounding code and self-correct implementation-level failures only.
+- **Not Grok:** independent diagnosis, architecture, review, research-as-ownership, performance/security analysis, or final judgment. Pure explanation/summary/translation and analysis/review/diagnosis/planning stay with the host. Trivial 1–2 line mechanical edits may remain a host exemption.
+- **Session policy (host-owned):** reuse `continue`/`taskId` when the request is a genuine implementation follow-up and context is relevant and healthy; host may choose `run`/`start` for a fresh task/session when work is unrelated, context is stale/polluted, prior ACP session is unhealthy/empty/non-convergent, mode/workspace boundaries require it, or a clean implementation context is safer. User explicit reset is sufficient but not required. Grok does not decide lifecycle. ACP `session/new` vs `session/load` implementation remains unchanged.
+- **AskHuman** managed markers must stay untouched.
 
 See `DEFAULT_WORKFLOW_BODY` for the authoritative Chinese instruction text injected into global `AGENTS.md` / `CLAUDE.md`.
 

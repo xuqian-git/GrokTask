@@ -4,9 +4,9 @@
 
 # GrokTask
 
-**Maximum workspace delegation to Grok Build — watch it live, locally.**
+**Host plans and reviews; Grok implements — watch it live, locally.**
 
-Codex or Claude Code keep intent, light review, and user decisions; GrokTask runs Grok Build via MCP for coding, debugging, CI, review, and analysis. Follow the real **Thought → Tool → Reply** stream in a native desktop UI.
+Codex or Claude Code own analysis, planning, diagnosis, review, and final judgment; GrokTask runs Grok Build via MCP as an **implementation executor** (code, tests, fix execution). Follow the real **Thought → Tool → Reply** stream in a native desktop UI.
 
 [English](#english) · [简体中文](#简体中文)
 
@@ -29,13 +29,13 @@ Codex or Claude Code keep intent, light review, and user decisions; GrokTask run
 
 GrokTask is a **standalone, cross-platform local task runner**. One binary provides CLI, MCP, a local daemon, and a native Tauri desktop UI (menu bar / tray popover and full window).
 
-| You keep… | GrokTask handles… |
+| You keep… | GrokTask / Grok handles… |
 | --- | --- |
-| Intent, sensitivity, light final review (Codex / Claude Code) | Workspace coding, debugging, CI, review, tests, docs, analysis via Grok Build MCP |
-| Explicit `read` / `write` on every task | Blocking `run` / `continue`, or async `start` / `status` / `wait` / `cancel` |
-| User decisions and external side effects | Live Thought → Tool → Reply timeline; same-task ACP session reuse |
+| Analysis, plan/spec, diagnosis, review, final judgment (Codex / Claude Code) | Planned coding implementation, file edits, tests, and fix execution via Grok Build MCP |
+| Explicit `read` / `write`; host chooses reuse vs fresh session | Blocking `run` / `continue`, or async `start` / `status` / `wait` / `cancel` |
+| User decisions and external side effects | Live Thought → Tool → Reply timeline; ACP session load reuse when host continues a task |
 
-**Key capabilities:** `run` blocks until the turn finishes; `continue` reuses the same task/session for follow-ups; async control survives process restarts via the local daemon; every task requires `mode: read` or `mode: write` (no defaults, no text inference); native timeline, plan bar, history, and settings.
+**Key capabilities:** host supplies plan/spec + acceptance criteria, then `run`/`start` for implementation; `continue` for relevant healthy follow-ups or review-directed repairs (host may start fresh when safer); async control survives process restarts via the local daemon; every task requires `mode: read` or `mode: write` (no defaults, no text inference); native timeline, plan bar, history, and settings.
 
 ### Prerequisites
 
@@ -178,13 +178,13 @@ Artifacts are named with **target and version** and include **SHA-256** checksum
 
 GrokTask 是一个**独立、跨平台的本地任务运行器**。同一个二进制提供 CLI、MCP、本地 daemon，以及原生 Tauri 桌面界面（菜单栏 / 托盘浮层与完整窗口）。
 
-| 你继续负责… | GrokTask 负责… |
+| 你继续负责… | GrokTask / Grok 负责… |
 | --- | --- |
-| 意图识别、敏感度把关、轻量终审（Codex / Claude Code） | 工作区编码、调试、CI、review、测试、文档与分析（Grok Build MCP） |
-| 每次任务显式 `read` / `write` | 阻塞式 `run` / `continue`，或异步 `start` / `status` / `wait` / `cancel` |
-| 用户决策与需权威的外部副作用 | 原生 Thought → Tool → Reply 时间线；同 task ACP 会话复用 |
+| 分析、规划/规格、诊断、审查与最终判断（Codex / Claude Code） | 按主机 plan 落地：写/改代码、补测试、修复实现问题（Grok Build MCP） |
+| 每次任务显式 `read` / `write`；主机决定复用或新开会话 | 阻塞式 `run` / `continue`，或异步 `start` / `status` / `wait` / `cancel` |
+| 用户决策与需权威的外部副作用 | 原生 Thought → Tool → Reply 时间线；主机 `continue` 时 ACP session load 复用 |
 
-**关键能力：** `run` 阻塞到本轮结束；`continue` 在同一 task/session 上 follow-up；异步控制经本地 daemon 跨进程重启仍可用；每次任务必须 `mode: read` 或 `mode: write`（无默认值、不从文案推断）；原生时间线、计划条、历史与设置。
+**关键能力：** 主机给出 plan/spec 与验收标准后用 `run`/`start` 委派实现；`continue` 用于相关健康 follow-up 或按审查意见修复（上下文不健康时可新开）；异步控制经本地 daemon 跨进程重启仍可用；每次任务必须 `mode: read` 或 `mode: write`（无默认值、不从文案推断）；原生时间线、计划条、历史与设置。
 
 ### 前置条件
 

@@ -123,17 +123,17 @@ pub fn tool_defs() -> Vec<Value> {
     vec![
         json!({
             "name": "run",
-            "description": "Start a new GrokTask for the first turn of a host conversation+workspace (or after explicit reset). Delegates workspace work—coding, debugging/root-cause, CI diagnosis/fixes, code review, tests, docs, research, performance/stability/security analysis—to external xAI Grok Build and blocks until the turn finishes. Retain the returned taskId for later continue calls on the same conversation+workspace. mode must be explicit read|write (write may modify cwd); never silently switch read→write later. Prefer start for long background work; use continue (not a fresh run) for follow-ups on an existing taskId.",
+            "description": "After host analysis/plan: start a GrokTask that delegates planned coding implementation, file modifications, tests, and fix execution to external xAI Grok Build; blocks until the turn finishes. Supply an explicit plan/spec/diagnosis plus acceptance criteria in the task prompt. Host may choose run for a fresh task/session when work is unrelated, context is stale/polluted, the prior session is unhealthy, mode/workspace boundaries require it, or a clean implementation context is safer (user reset is sufficient but not required). Retain taskId when a later healthy implementation follow-up may use continue. mode must be explicit read|write (write may modify cwd); never silently switch read→write later. Prefer start for long background work.",
             "inputSchema": task_input_schema(false)
         }),
         json!({
             "name": "start",
-            "description": "Start a new long-running GrokTask for the first turn of a host conversation+workspace (or after explicit reset) and return immediately with taskId+turnId. Same delegation scope as run (coding, debugging, CI, review, tests, docs, research, analysis). Requires caller-generated submissionId (UUID) for exactly-once retry. mode must be explicit read|write; never silently switch read→write on later turns. Disconnect does not cancel — use cancel. For follow-ups on the same taskId use continue, not another start.",
+            "description": "After host analysis/plan: start a long-running GrokTask for planned coding implementation, file modifications, tests, and fix execution via external xAI Grok Build; returns immediately with taskId+turnId. Same implementation scope as run (not host-owned diagnosis/review/research/performance analysis). Requires caller-generated submissionId (UUID) for exactly-once retry. Host may choose start for a fresh task/session when a clean context is safer or boundaries require it. mode must be explicit read|write; never silently switch read→write on later turns. Disconnect does not cancel — use cancel. For relevant healthy implementation follow-ups on an existing taskId use continue.",
             "inputSchema": task_input_schema(true)
         }),
         json!({
             "name": "continue",
-            "description": "Continue an existing GrokTask with a new prompt on the same ACP session (same taskId). Use for later turns/follow-ups within the same host conversation and workspace after run/start. Calls the daemon task.continue route (does not create a new task or session). Blocks until the new turn finishes and returns that turn's immutable RunResult. Does not change the task mode (read stays read, write stays write). Only use a fresh run/start when the host conversation or workspace changes, or the user explicitly asks for a new context.",
+            "description": "Continue an existing GrokTask with a new prompt on the same ACP session (same taskId). Use for relevant healthy implementation follow-ups or host-review-directed repairs after run/start. Calls the daemon task.continue route (does not create a new task or session). Blocks until the new turn finishes and returns that turn's immutable RunResult. Does not change the task mode (read stays read, write stays write). Host may instead choose a fresh run/start when context is stale/polluted/unrelated, the prior session is unhealthy, or a clean implementation context is safer—user explicit reset is sufficient but not required.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -471,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn run_start_continue_descriptions_match_session_reuse_contract() {
+    fn run_start_continue_descriptions_match_implementation_executor_contract() {
         let tools = tool_defs();
         let run = tools.iter().find(|t| t["name"] == "run").unwrap();
         let d = run["description"].as_str().unwrap();
@@ -479,24 +479,47 @@ mod tests {
         assert!(d.contains("read") && d.contains("write"));
         assert!(d.contains("taskId"));
         assert!(d.contains("continue"));
-        assert!(d.contains("debugging") || d.contains("review") || d.contains("CI"));
-        assert!(!d.contains("after the host agent has completed planning"));
+        // Implementation executor scope after host analysis
+        assert!(d.contains("After host analysis") || d.contains("host analysis"));
+        assert!(d.contains("coding implementation") || d.contains("file modifications"));
+        assert!(d.contains("acceptance criteria") || d.contains("plan/spec"));
+        assert!(d.contains("fresh") || d.contains("clean implementation"));
+        // Must not advertise diagnosis/review/research/perf as Grok-owned
+        assert!(!d.contains("debugging/root-cause"));
+        assert!(!d.contains("code review"));
+        assert!(!d.contains("performance/stability/security"));
+        assert!(!d.contains("workspace work—coding, debugging"));
 
         let start = tools.iter().find(|t| t["name"] == "start").unwrap();
         let start_d = start["description"].as_str().unwrap();
         assert!(start_d.contains("long") || start_d.contains("background"));
         assert!(start_d.contains("continue"));
         assert!(start_d.contains("taskId"));
+        assert!(start_d.contains("After host analysis") || start_d.contains("implementation"));
+        assert!(!start_d.contains("debugging, CI, review"));
+        assert!(!start_d.contains("docs, research, analysis"));
 
         let cont = tools.iter().find(|t| t["name"] == "continue").unwrap();
         let cont_d = cont["description"].as_str().unwrap();
         assert!(cont_d.contains("taskId"));
         assert!(cont_d.contains("run/start") || cont_d.contains("run") || cont_d.contains("start"));
         assert!(
+            cont_d.contains("implementation follow-up")
+                || cont_d.contains("review-directed")
+                || cont_d.contains("healthy")
+        );
+        assert!(
             cont_d.contains("Does not change the task mode")
                 || cont_d.contains("read stays read")
                 || cont_d.contains("never")
         );
+        // Host may choose fresh run/start; not rigid "only explicit user reset"
+        assert!(
+            cont_d.contains("Host may instead choose")
+                || cont_d.contains("fresh run/start")
+                || cont_d.contains("clean implementation")
+        );
+        assert!(!cont_d.contains("Only use a fresh run/start when the host conversation or workspace changes, or the user explicitly asks for a new context"));
     }
 
     #[test]

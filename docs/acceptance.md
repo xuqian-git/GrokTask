@@ -181,7 +181,7 @@ cargo build --manifest-path src-tauri/Cargo.toml --release --features custom-pro
 在本机已登录 Grok 时运行 opt-in E2E：
 
 1. read 任务回复 `hello`，UI 与 MCP 都收到非 JSON 的流式/最终文本。
-2. read 读取/摘要一个 fixture，确认工作区未变；review、bug 排查和性能分析由调用方完成。
+2. read 读取/摘要一个 fixture，确认工作区未变；review、bug 排查、根因与性能/安全分析由调用方（主机）完成，Grok 仅作实现执行。
 3. write 修改 fixture 文本，确认变更发生且 MCP 返回最终 Markdown。
 4. 至少一个包含 thought + tool + reply 的任务，人工对比终端 Grok 与 GrokTask 顺序。
 5. 同 session 从 popover 发送 follow-up，确认上下文连续。

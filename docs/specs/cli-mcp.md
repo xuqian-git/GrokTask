@@ -63,7 +63,7 @@ GrokTask daemon start|stop|restart [--force]|status|logs
 - `wait`
 - `cancel`
 
-`continue` 是阻塞式 follow-up：在同一 `taskId`（同一主机对话 + workspace）上调用 daemon `task.continue`，复用已持久化的 ACP `sessionId`（`session/load` + `session/prompt`），返回新 turn 的不可变 `RunResult`。桌面 UI 仍可直接使用内部 `task.continue`。
+`continue` 是阻塞式 follow-up：在同一 `taskId` 上调用 daemon `task.continue`，协议层复用已持久化的 ACP `sessionId`（`session/load` + `session/prompt`），返回新 turn 的不可变 `RunResult`。主机策略上用于**相关且健康**的实现 follow-up 或审查驱动修复；上下文陈旧/污染/不相关、会话不健康，或需要干净实现上下文时，主机可改用 `run`/`start` 新开（用户明确重置足够但不强制）。桌面 UI 仍可直接使用内部 `task.continue`。
 
 ### 3.1 公共任务输入
 
@@ -164,7 +164,7 @@ MCP 进程断开不取消异步任务。
 2. 若 task 已有 `acp_session_id`，ACP 运行时 `session/load` 该 id，再 `session/prompt`（禁止 follow-up 上 `session/new`）；
 3. 阻塞等待该 turn 的不可变 `RunResult`（与 `run`/`wait` 相同 shape）。
 
-仅在主机对话变更、workspace 变更，或用户明确要求新上下文时，才应重新 `run`/`start`。不得静默把 task 的 `read` 改成 `write`。
+复用或新开由 Codex / Claude Code 主机判断：相关且健康的实现 follow-up 用 `continue`；工作不相关、上下文陈旧/污染、会话不健康/空响应/不收敛、mode/workspace 边界，或干净上下文更安全时可用 `run`/`start`。用户明确 reset 足够但不是必要条件；Grok 不决定会话生命周期。不得静默把 task 的 `read` 改成 `write`。
 
 ### 3.5 `status`
 
@@ -304,14 +304,15 @@ Turn cancel 等待状态对应的有界流程结束，并总是返回目标 Turn
 `run/start` description 必须明确：
 
 - 任务会发送给外部 xAI Grok 服务；
-- 委派范围包含编码、调试/根因、CI、review、测试、文档、工作区研究与性能/稳定性/安全分析（最大委派）；
+- 主机完成分析/plan 后，委派范围仅为**已规划的实现**：写/改代码、文件修改、测试与修复执行（实现执行器）；**不得**把调试/根因、code review、研究、性能/稳定性/安全分析宣传为 Grok 职责；
+- prompt 应携带 plan/spec/诊断与验收标准；
 - `write` 可修改传入 cwd；
 - mode 必须由调用方根据用户意图显式选择；后续不得静默 read→write；
 - 进度始终本地持久化；用户打开应用或启用 `active/always` 托盘时可实时查看；
 - `run` 等待最终答复，`start` 适合后台任务；
-- 返回的 `taskId` 应在同一主机对话 + workspace 内保留，后续用 `continue`。
+- 主机可选择 `run`/`start` 以获得干净/新上下文（工作不相关、上下文陈旧/污染、先前会话不健康、mode/workspace 边界需要时）；`taskId` 可在后续相关健康 follow-up 时供 `continue` 使用。
 
-`continue` description 必须明确：传入已有 `taskId` + 新 prompt；调用 `task.continue` 而非新建 task；阻塞返回新 turn 的不可变结果；不改变 mode。
+`continue` description 必须明确：传入已有 `taskId` + 新 prompt；用于相关健康的实现 follow-up 或主机审查驱动修复；调用 `task.continue` 而非新建 task；阻塞返回新 turn 的不可变结果；不改变 mode；主机也可改选 `run`/`start` 新开（用户明确重置足够但不强制）。
 
 `status` 的 description 必须要求传回原 taskId；`wait` 必须传回 start/run/continue 对应的 taskId 与 turnId；`cancel` 传 turnId 或 status 给出的 activeRecoveryId。`start` description 要求调用方为一次逻辑提交生成并在 retry 时复用 submissionId。不得在描述中暗示 GrokTask 会提交、推送或绕过工作目录范围。
 

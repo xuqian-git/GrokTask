@@ -97,6 +97,7 @@ GrokTask agents workflow disable codex|claude
 
 - 状态 / 启用 / 禁用不依赖项目 workspace 或 `--cwd`（`--cwd` 可保留兼容，但不参与目标解析）。
 - 只编辑 GrokTask managed block；保留 AskHuman 与其它用户内容；标记畸形时拒绝写入。
+- 默认正文（`DEFAULT_WORKFLOW_BODY`）约定：**主机分析/规划/诊断/审查/终判，Grok 只做实现执行**；会话复用或新开由主机决定（非“最大委派 / 不思考立即委派 / 仅用户重置才新开”）。
 - 需要时创建父目录（`.codex/`、`.claude/`）。
 - MCP 配置路径不变：`~/.codex/config.toml`、`~/.claude.json`。
 
